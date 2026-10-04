@@ -1,0 +1,39 @@
+rules_version = '2';
+
+// Firebase Storage rules – supporting documents & receipt images.
+// Files are never deleted or overwritten (audit trail).
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() { return request.auth != null; }
+    function profile() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+    function role() { return profile().role; }
+    function activeUser() { return signedIn() && profile().get('active', true) != false; }
+    // custom roles: permission keys are copied onto users/{uid}.permissions
+    function isCustom() { return activeUser() && role() == 'custom'; }
+    function hasAnyPerm(ps) { return isCustom() && profile().get('permissions', []).hasAny(ps); }
+    function isStaff() { return activeUser() && (role() in ['superAdmin', 'accountant', 'operator', 'auditor'] || isCustom()); }
+    function isWriter() {
+      return activeUser() && (role() in ['superAdmin', 'accountant', 'operator']
+        || hasAnyPerm(['documents.upload', 'donations.create', 'expenses.create']));
+    }
+    function isSuper() { return activeUser() && role() == 'superAdmin'; }
+
+    // supporting documents: PDF / images / Excel / CSV / Word, max 15 MB
+    match /documents/{path=**} {
+      allow read: if isStaff();
+      allow create: if isWriter()
+        && request.resource.size < 15 * 1024 * 1024
+        && request.resource.contentType.matches('application/pdf|image/.*|text/csv|application/vnd.*|application/msword|application/octet-stream');
+      allow update, delete: if false;
+    }
+
+    // logo / deity images / signature / stamp used on receipts
+    match /settings/{file} {
+      allow read: if isStaff();
+      allow create: if (isSuper() || hasAnyPerm(['settings.manage'])) && request.resource.size < 2 * 1024 * 1024 && request.resource.contentType.matches('image/.*');
+      allow update, delete: if false;
+    }
+  }
+}

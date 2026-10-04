@@ -1,0 +1,39 @@
+@font-face { font-family: 'Hind'; src: url('/fonts/Hind-Regular.ttf') format('truetype'); font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Hind'; src: url('/fonts/Hind-Medium.ttf') format('truetype'); font-weight: 500; font-display: swap; }
+@font-face { font-family: 'Hind'; src: url('/fonts/Hind-SemiBold.ttf') format('truetype'); font-weight: 600; font-display: swap; }
+@font-face { font-family: 'Hind'; src: url('/fonts/Hind-Bold.ttf') format('truetype'); font-weight: 700; font-display: swap; }
+
+:root { --brand: #8f2d1f; --brand-dark: #2b1712; --paper: #fbf6ec; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: #f5f3ef; }
+body { font-family: 'Hind', -apple-system, 'Segoe UI', Roboto, sans-serif; }
+
+.page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.page-header h1 { margin: 0; font-size: 22px; font-weight: 600; line-height: 1.3; }
+.page-header .sub { color: rgba(0,0,0,.55); font-size: 13px; margin-top: 2px; }
+.money { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.money.in { color: #237804; }
+.money.out { color: #a8071a; }
+.muted { color: rgba(0,0,0,.5); }
+.hi { font-family: 'Hind', sans-serif; }
+.stat-card .ant-statistic-title { font-size: 13px; }
+.filter-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+.filter-bar > * { min-width: 0; }
+.table-summary td { font-weight: 600; background: #fafafa; }
+.ant-table-cell .ant-tag { margin-inline-end: 0; }
+.login-bg { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: radial-gradient(circle at 20% 20%, #f6e3c4 0, transparent 40%), radial-gradient(circle at 80% 70%, #f3d2c6 0, transparent 45%), #faf5ec; }
+.brand-title { font-weight: 700; color: var(--brand); }
+.sider-brand { color: #fff; padding: 14px 16px; font-weight: 600; font-size: 15px; line-height: 1.25; border-bottom: 1px solid rgba(255,255,255,.08); }
+.sider-brand small { display: block; font-weight: 400; color: rgba(255,255,255,.55); font-size: 11px; }
+
+@media print {
+  .no-print, .ant-layout-sider, .ant-layout-header, .ant-pagination, .filter-bar, .ant-drawer-mask { display: none !important; }
+  .ant-layout-content { margin: 0 !important; padding: 0 !important; }
+  body { background: #fff; }
+  .print-only { display: block !important; }
+}
+.print-only { display: none; }
+@media (max-width: 640px) {
+  .page-header h1 { font-size: 18px; }
+}

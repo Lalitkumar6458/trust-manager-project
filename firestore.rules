@@ -1,0 +1,406 @@
+rules_version = '2';
+
+// ======================================================================
+// Trust Management – Firestore Security Rules
+// Roles: superAdmin | accountant | operator | auditor  (users/{uid}.role)
+//        custom → users/{uid}.permissions holds the permission keys picked by the Super Admin
+// Principles:
+//   * no financial document can ever be deleted
+//   * posted (approved / paid) entries are immutable – corrections by void + reversal
+//   * every balance / total change must be backed by a ledger line written in the same request
+//   * closed months / closed FYs are locked for everyone except the Super Admin
+//   * finalized FYs are locked for everyone
+//   * audit logs are append-only and server-timestamped
+// ======================================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------- helpers ----------------
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function dp(c, id) { return /databases/$(database)/documents/$(c)/$(id); }
+    function userDoc() { return get(dp('users', uid())); }
+    function active() { return signedIn() && exists(dp('users', uid())) && userDoc().data.get('active', true) != false; }
+    function role() { return userDoc().data.role; }
+    function hasRole(roles) { return active() && role() in roles; }
+
+    // custom roles (permission keys copied onto the user profile)
+    function isCustom() { return active() && role() == 'custom'; }
+    function perms() { return userDoc().data.get('permissions', []); }
+    function hasPerm(p) { return isCustom() && p in perms(); }
+    function hasAnyPerm(ps) { return isCustom() && perms().hasAny(ps); }
+
+    function isSuper() { return hasRole(['superAdmin']); }
+    function isFinance() { return hasRole(['superAdmin', 'accountant']); }
+    function isFinanceOrAuditor() { return hasRole(['superAdmin', 'accountant', 'auditor']); }
+    function isStaff() { return hasRole(['superAdmin', 'accountant', 'operator', 'auditor']) || isCustom(); }
+    function isEntry() { return hasRole(['superAdmin', 'accountant', 'operator']); }
+    // built-in finance roles, or a custom role holding permission p
+    function fin(p) { return isFinance() || hasPerm(p); }
+
+    // data-entry abilities
+    function canDon() { return isEntry() || hasPerm('donations.create'); }
+    function canExp() { return isEntry() || hasPerm('expenses.create'); }
+    function canDonors() { return canDon() || hasPerm('donors.edit'); }
+    function canPayees() { return canExp() || hasPerm('beneficiaries.edit'); }
+    function canUpload() { return isEntry() || hasAnyPerm(['documents.upload', 'donations.create', 'expenses.create']); }
+
+    function canReadLedger() {
+      return isFinanceOrAuditor() || hasAnyPerm(['ledger.view', 'accounts.view', 'reports.view', 'reconciliation.view',
+        'closing.view', 'closing.close', 'audit.view', 'audit.manage', 'fy.view']);
+    }
+
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function onlyChanged(keys) { return changed().hasOnly(keys); }
+    function stampedByMe() { return request.resource.data.updatedBy == uid(); }
+
+    function fyDoc(fyId) { return get(dp('financialYears', fyId)); }
+    function monthClosed(mk) {
+      return exists(dp('monthlyClosings', mk)) && get(dp('monthlyClosings', mk)).data.status == 'closed';
+    }
+    // date, monthKey and financialYearId must agree (prevents back-dating into a locked period)
+    function datesOk(d) {
+      return d.date is string && d.date.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}')
+        && d.monthKey is string && d.date.matches(d.monthKey + '-[0-9]{2}')
+        && exists(dp('financialYears', d.financialYearId))
+        && d.date >= fyDoc(d.financialYearId).data.startDate
+        && d.date <= fyDoc(d.financialYearId).data.endDate;
+    }
+    // period lock: finalized → nobody; closed FY / closed month → only Super Admin
+    function periodOpen(d) {
+      return datesOk(d)
+        && fyDoc(d.financialYearId).data.status != 'finalized'
+        && (isSuper() || (fyDoc(d.financialYearId).data.status == 'open' && !monthClosed(d.monthKey)));
+    }
+    function notFinalized(d) { return fyDoc(d.financialYearId).data.status != 'finalized'; }
+
+    function sameFinancials(a, b) {
+      return a.amount == b.amount && a.date == b.date && a.accountId == b.accountId && a.lines == b.lines;
+    }
+    // ledger line written in THIS request (getAfter) that did not exist before
+    function newTxn(id) { return id is string && !exists(dp('transactions', id)) && existsAfter(dp('transactions', id)); }
+    function txnAfter(id) { return getAfter(dp('transactions', id)).data; }
+    function near(a, b) { return a - b < 0.01 && b - a < 0.01; }
+
+    // ---------------- settings ----------------
+    match /settings/bootstrap {
+      allow get: if true; // login page checks whether first-time setup is done
+      // NOTE: after the first Super Admin exists, disable public sign-up in Firebase Auth (see README)
+      allow create: if signedIn() && !exists(dp('settings', 'bootstrap'))
+        && getAfter(dp('users', uid())).data.role == 'superAdmin';
+      allow update, delete: if false;
+    }
+    match /settings/{id} {
+      allow read: if isStaff();
+      allow write: if (isSuper() || hasPerm('settings.manage')) && id != 'bootstrap';
+    }
+
+    // ---------------- users ----------------
+    match /users/{userId} {
+      allow read: if signedIn() && (uid() == userId || isSuper());
+      // one-time bootstrap of the first Super Admin
+      allow create: if signedIn() && uid() == userId
+        && !exists(dp('settings', 'bootstrap'))
+        && existsAfter(dp('settings', 'bootstrap'))
+        && request.resource.data.role == 'superAdmin';
+      allow create: if isSuper();
+      // a Super Admin cannot demote / disable himself (prevents lock-out)
+      allow update: if isSuper() && (userId != uid() || (request.resource.data.role == 'superAdmin' && request.resource.data.active != false));
+      allow delete: if false;
+    }
+
+    // ---------------- counters (receipt / voucher / donor / payee numbers) ----------------
+    function counterAllowed(id) {
+      return isSuper()
+        || (id == 'donor' && canDonors())
+        || (id == 'payee' && canPayees())
+        || (id.matches('receipt_.*') && canDon())
+        || (id.matches('voucher_.*') && canExp());
+    }
+    match /counters/{id} {
+      allow read: if isStaff();
+      allow create: if counterAllowed(id) && (request.resource.data.next == 2 || (isSuper() && request.resource.data.next > 1));
+      // one number per write; the Super Admin may reserve a block (bulk donor import)
+      allow update: if counterAllowed(id) && (request.resource.data.next == resource.data.next + 1
+        || (isSuper() && request.resource.data.next > resource.data.next));
+      allow delete: if false;
+    }
+
+    // ---------------- masters ----------------
+    match /donationCategories/{id} {
+      allow read: if isStaff();
+      allow write: if isSuper() || hasPerm('settings.manage');
+    }
+    match /expenseCategories/{id} {
+      allow read: if isStaff();
+      allow write: if isSuper() || hasPerm('settings.manage');
+    }
+    match /trustees/{id} {
+      allow read: if isStaff();
+      allow create, update: if isSuper() || hasPerm('trustees.manage');
+      allow delete: if false;
+    }
+    match /funds/{id} {
+      allow read: if isStaff();
+      allow create: if fin('funds.manage');
+      // details by fund managers; received / spent only move together with a posting
+      allow update: if (fin('funds.manage') && !changed().hasAny(['received', 'spent']))
+        || ((fin('donations.approve') || fin('expenses.pay') || fin('finance.void')) && onlyChanged(['received', 'spent']));
+      allow delete: if false;
+    }
+
+    match /donors/{id} {
+      allow read: if isStaff();
+      allow create: if canDonors() && request.resource.data.totalAmount == 0 && request.resource.data.donationCount == 0;
+      allow update: if (canDonors() && !changed().hasAny(['totalAmount', 'donationCount', 'fyTotals', 'firstDonationDate', 'lastDonationDate', 'donorCode']))
+        || ((fin('donations.approve') || fin('finance.void'))
+            && onlyChanged(['totalAmount', 'donationCount', 'fyTotals', 'firstDonationDate', 'lastDonationDate', 'categoryIds']));
+      allow delete: if false;
+    }
+
+    match /beneficiaries/{id} {
+      allow read: if isStaff();
+      allow create: if canPayees() && request.resource.data.totalAmount == 0 && request.resource.data.paymentCount == 0;
+      allow update: if (canPayees() && !changed().hasAny(['totalAmount', 'paymentCount', 'lastPaymentDate', 'code']))
+        || ((fin('expenses.pay') || fin('finance.void')) && onlyChanged(['totalAmount', 'paymentCount', 'lastPaymentDate']));
+      allow delete: if false;
+    }
+
+    // ---------------- accounts ----------------
+    match /accounts/{id} {
+      allow read: if isStaff();
+      allow create: if isSuper();
+      // balance moves only together with a NEW ledger line on this account for exactly that amount
+      allow update: if isSuper()
+        || (onlyChanged(['currentBalance', 'updatedAt', 'lastTxnId'])
+            && newTxn(request.resource.data.lastTxnId)
+            && txnAfter(request.resource.data.lastTxnId).accountId == id
+            && txnAfter(request.resource.data.lastTxnId).createdBy == uid()
+            && near(request.resource.data.currentBalance - resource.data.currentBalance,
+                    txnAfter(request.resource.data.lastTxnId).credit - txnAfter(request.resource.data.lastTxnId).debit));
+      allow delete: if false;
+    }
+
+    // ---------------- donations ----------------
+    match /donations/{id} {
+      allow read: if isStaff();
+
+      allow create: if canDon()
+        && request.resource.data.status in ['draft', 'submitted']
+        && request.resource.data.posted == false
+        && request.resource.data.createdBy == uid()
+        && request.resource.data.amount > 0
+        && periodOpen(request.resource.data);
+
+      // 1) edit / submit / verify while NOT posted. Only a verifier may (keep) set 'verified'.
+      allow update: if (fin('donations.verify') || (canDon() && resource.data.createdBy == uid()))
+        && stampedByMe()
+        && request.resource.data.createdBy == resource.data.createdBy
+        && resource.data.posted == false && request.resource.data.posted == false
+        && resource.data.status in ['draft', 'submitted', 'verified']
+        && request.resource.data.status in ['draft', 'submitted', 'verified']
+        && (request.resource.data.status != 'verified' || fin('donations.verify'))
+        && request.resource.data.amount > 0
+        && (resource.data.receiptNo == null || request.resource.data.receiptNo == resource.data.receiptNo)
+        && periodOpen(resource.data) && periodOpen(request.resource.data);
+
+      // 2) approve = post to ledger (the ledger line must be written in the same transaction)
+      allow update: if fin('donations.approve') && stampedByMe()
+        && resource.data.status == 'verified' && request.resource.data.status == 'approved'
+        && resource.data.posted == false && request.resource.data.posted == true
+        && sameFinancials(resource.data, request.resource.data)
+        && newTxn(request.resource.data.ledgerTxnId)
+        && txnAfter(request.resource.data.ledgerTxnId).sourceId == id
+        && txnAfter(request.resource.data.ledgerTxnId).type == 'donation'
+        && txnAfter(request.resource.data.ledgerTxnId).accountId == resource.data.accountId
+        && near(txnAfter(request.resource.data.ledgerTxnId).credit, resource.data.amount)
+        && periodOpen(resource.data);
+
+      // 3) void (posted → reversal line required; allowed in a closed month – reversal is posted today – never in a finalized FY)
+      allow update: if fin('finance.void') && stampedByMe()
+        && resource.data.status != 'void' && request.resource.data.status == 'void'
+        && notFinalized(resource.data)
+        && ((resource.data.posted == true
+             && newTxn(request.resource.data.reversalTxnId)
+             && txnAfter(request.resource.data.reversalTxnId).reversalOf == resource.data.ledgerTxnId
+             && near(txnAfter(request.resource.data.reversalTxnId).debit, resource.data.amount))
+            || (resource.data.posted == false && periodOpen(resource.data)))
+        && onlyChanged(['status', 'previousStatus', 'voidReason', 'voidDate', 'voidedBy', 'voidedByName', 'voidedAt', 'reversalTxnId', 'bounced', 'workflow', 'updatedBy', 'updatedByName', 'updatedAt']);
+
+      // 4) receipt print counter (duplicate copies are marked on the PDF)
+      allow update: if isStaff() && onlyChanged(['printCount', 'lastPrintedAt', 'lastPrintedBy'])
+        && request.resource.data.printCount == resource.data.get('printCount', 0) + 1;
+
+      allow delete: if false;
+    }
+
+    // ---------------- expenses ----------------
+    match /expenses/{id} {
+      allow read: if isStaff();
+
+      allow create: if canExp()
+        && request.resource.data.status in ['draft', 'submitted']
+        && request.resource.data.posted == false
+        && request.resource.data.createdBy == uid()
+        && request.resource.data.amount > 0
+        && periodOpen(request.resource.data);
+
+      // 1) edit / submit / approve while NOT paid. Only an approver may (keep) set 'approved'.
+      allow update: if (fin('expenses.approve') || (canExp() && resource.data.createdBy == uid()))
+        && stampedByMe()
+        && request.resource.data.createdBy == resource.data.createdBy
+        && resource.data.posted == false && request.resource.data.posted == false
+        && resource.data.status in ['draft', 'submitted', 'approved']
+        && request.resource.data.status in ['draft', 'submitted', 'approved']
+        && (request.resource.data.status != 'approved' || fin('expenses.approve'))
+        && request.resource.data.amount > 0
+        && (resource.data.voucherNo == null || request.resource.data.voucherNo == resource.data.voucherNo)
+        && periodOpen(resource.data) && periodOpen(request.resource.data);
+
+      // 2) mark paid = post to ledger on the payment date (period of the ledger line is checked by the transaction rule)
+      allow update: if fin('expenses.pay') && stampedByMe()
+        && resource.data.status == 'approved' && request.resource.data.status == 'paid'
+        && resource.data.posted == false && request.resource.data.posted == true
+        && request.resource.data.amount == resource.data.amount && request.resource.data.date == resource.data.date
+        && request.resource.data.lines == resource.data.lines
+        && newTxn(request.resource.data.ledgerTxnId)
+        && txnAfter(request.resource.data.ledgerTxnId).sourceId == id
+        && txnAfter(request.resource.data.ledgerTxnId).type == 'expense'
+        && txnAfter(request.resource.data.ledgerTxnId).accountId == request.resource.data.accountId
+        && near(txnAfter(request.resource.data.ledgerTxnId).debit, resource.data.amount)
+        && notFinalized(resource.data);
+
+      // 3) void
+      allow update: if fin('finance.void') && stampedByMe()
+        && resource.data.status != 'void' && request.resource.data.status == 'void'
+        && notFinalized(resource.data)
+        && ((resource.data.posted == true
+             && newTxn(request.resource.data.reversalTxnId)
+             && txnAfter(request.resource.data.reversalTxnId).reversalOf == resource.data.ledgerTxnId
+             && near(txnAfter(request.resource.data.reversalTxnId).credit, resource.data.amount))
+            || (resource.data.posted == false && periodOpen(resource.data)))
+        && onlyChanged(['status', 'previousStatus', 'voidReason', 'voidDate', 'voidedBy', 'voidedByName', 'voidedAt', 'reversalTxnId', 'workflow', 'updatedBy', 'updatedByName', 'updatedAt']);
+
+      allow delete: if false;
+    }
+
+    // ---------------- ledger ----------------
+    function txnSourceOk(t, txnId) {
+      return (t.sourceType == 'manual' && t.type != 'reversal' && fin('ledger.manual'))
+        || (t.sourceType == 'manual' && t.type == 'reversal' && (fin('ledger.manual') || fin('finance.void')))
+        || (t.sourceType == 'donation' && t.type == 'donation' && fin('donations.approve')
+            && getAfter(dp('donations', t.sourceId)).data.ledgerTxnId == txnId)
+        || (t.sourceType == 'expense' && t.type == 'expense' && fin('expenses.pay')
+            && getAfter(dp('expenses', t.sourceId)).data.ledgerTxnId == txnId)
+        || (t.sourceType == 'donation' && t.type == 'reversal' && fin('finance.void')
+            && getAfter(dp('donations', t.sourceId)).data.reversalTxnId == txnId)
+        || (t.sourceType == 'expense' && t.type == 'reversal' && fin('finance.void')
+            && getAfter(dp('expenses', t.sourceId)).data.reversalTxnId == txnId);
+    }
+    match /transactions/{id} {
+      allow read: if canReadLedger();
+      allow create: if request.resource.data.createdBy == uid()
+        && request.resource.data.status == 'active'
+        && request.resource.data.reconciled == false
+        && request.resource.data.credit >= 0 && request.resource.data.debit >= 0
+        && (request.resource.data.credit > 0) != (request.resource.data.debit > 0)
+        && periodOpen(request.resource.data)
+        && txnSourceOk(request.resource.data, id);
+      // amounts / dates never change: only reconciliation flags, or active → reversed
+      allow update: if (fin('reconciliation.manage') && onlyChanged(['reconciled', 'statementLineId', 'reconciledAt']))
+        || ((fin('finance.void') || (fin('ledger.manual') && resource.data.sourceType == 'manual')) && notFinalized(resource.data)
+            && resource.data.status == 'active' && request.resource.data.status == 'reversed'
+            && onlyChanged(['status', 'reversedAt', 'reversedBy', 'reverseReason']));
+      allow delete: if false;
+    }
+
+    // ---------------- reconciliation ----------------
+    match /bankStatements/{id} {
+      allow read: if isFinanceOrAuditor() || hasPerm('reconciliation.view');
+      allow create, update: if fin('reconciliation.manage');
+      allow delete: if false;
+    }
+    match /statementLines/{id} {
+      allow read: if isFinanceOrAuditor() || hasPerm('reconciliation.view');
+      allow create: if fin('reconciliation.manage');
+      allow update: if fin('reconciliation.manage') && onlyChanged(['status', 'matchedTxnId', 'matchType', 'matchedAt', 'ignoreReason']);
+      allow delete: if false;
+    }
+
+    // ---------------- closings ----------------
+    match /monthlyClosings/{monthKey} {
+      allow read: if isStaff();
+      allow create: if fin('closing.close') && request.resource.data.status == 'closed';
+      // closing figures are frozen: only open → closed (closer) or closed → open (Super Admin)
+      allow update: if (fin('closing.close') && resource.data.status == 'open' && request.resource.data.status == 'closed')
+        || (isSuper() && request.resource.data.status == 'open');
+      allow delete: if false;
+    }
+
+    match /financialYears/{fyId} {
+      allow read: if isStaff();
+      allow create: if isSuper();
+      allow update: if isSuper() && onlyChanged(['isCurrent']);
+      allow update: if resource.data.status != 'finalized' && (
+        isSuper()
+        || (fin('audit.manage') && onlyChanged(['audit', 'assets', 'liabilities']) && request.resource.data.audit.status != 'finalized')
+      );
+      allow delete: if false;
+    }
+
+    // ---------------- documents ----------------
+    match /documents/{id} {
+      allow read: if isStaff();
+      allow create: if canUpload() && request.resource.data.createdBy == uid() && request.resource.data.status == 'active'
+        && request.resource.data.url.matches('https://firebasestorage[.]googleapis[.]com/.*')
+        && request.resource.data.storagePath.matches('documents/.*');
+      allow update: if fin('documents.archive') && onlyChanged(['status', 'archiveReason', 'updatedBy', 'updatedByName', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // ---------------- audit trail (append-only, server time) ----------------
+    match /auditLogs/{id} {
+      allow read: if isFinanceOrAuditor() || hasPerm('auditLogs.view');
+      allow create: if isStaff() && request.resource.data.userId == uid()
+        && request.resource.data.at == request.time
+        && request.resource.data.keys().hasOnly(['collection', 'docId', 'ref', 'action', 'summary', 'changes', 'reason', 'userId', 'userName', 'role', 'device', 'at']);
+      allow update, delete: if false;
+    }
+    // written only by Cloud Functions (Admin SDK) – tamper-proof mirror
+    match /serverAuditLogs/{id} {
+      allow read: if isFinanceOrAuditor() || hasPerm('auditLogs.view');
+      allow write: if false;
+    }
+
+    // ---------------- year summary (display only – kept in step by every posting) ----------------
+    match /stats/{id} {
+      allow read: if isStaff();
+      allow write: if id.matches('fy_[0-9]{4}-[0-9]{2}') && (isFinance() || hasAnyPerm(['donations.approve', 'expenses.pay', 'finance.void', 'ledger.manual']));
+    }
+
+    // ---------------- custom roles (Super Admin only) ----------------
+    match /roles/{id} {
+      allow read: if isStaff();
+      allow write: if isSuper();
+    }
+
+    // ---------------- notifications ----------------
+    match /notifications/{id} {
+      allow read: if isStaff();
+      allow create: if isStaff()
+        && request.resource.data.keys().hasOnly(['type', 'title', 'message', 'link', 'roles', 'readBy', 'createdAt'])
+        && request.resource.data.readBy.size() == 0
+        && request.resource.data.createdAt == request.time
+        && (request.resource.data.link == null || request.resource.data.link.matches('/[A-Za-z0-9_-][A-Za-z0-9/_?=&.-]*'));
+      allow update: if isStaff() && onlyChanged(['readBy'])
+        && request.resource.data.readBy.hasAll(resource.data.readBy)
+        && request.resource.data.readBy.removeAll(resource.data.readBy).hasOnly([uid()]);
+      allow delete: if false;
+    }
+
+    match /reports/{id} {
+      allow read: if isStaff();
+      allow write: if false; // generated by Cloud Functions
+    }
+  }
+}

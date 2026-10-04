@@ -1,0 +1,16 @@
+node_modules
+.next
+out
+# secrets – never commit
+.env*
+!.env.example
+service-account*.json
+*firebase-adminsdk*.json
+*-credentials.json
+functions/node_modules
+functions/lib
+.firebase
+*.log
+.DS_Store
+# local backups downloaded from Settings → Backup
+trust-backup-*.xlsx
