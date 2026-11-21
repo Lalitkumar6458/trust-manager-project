@@ -4,10 +4,11 @@
 // Columns use the export-column format: { title, key, value?, money?, width? }.
 // ------------------------------------------------------------------
 import dayjs from 'dayjs';
+import { tsMillis } from '@/lib/q';
 import { PAYEE_TYPES, TXN_TYPES } from '@/lib/constants';
 import { fmtDate, fmtDateTime, round2, sum, maskAccount, monthLabel } from '@/lib/format';
 import { groupSum, periodSummary, classOf, net } from '@/services/accounting';
-import { withRunningBalance, fyOpeningFor } from '@/services/ledger';
+import { withRunningBalance, fyOpeningFor } from '@/lib/ledgerMath';
 
 // ---------- helpers ----------
 const pct = (v, total) => (total ? `${((v / total) * 100).toFixed(1)}%` : '');
@@ -554,7 +555,7 @@ export const REPORTS = [
     key: 'documents-register', group: 'audit', title: 'Supporting Documents Register', needs: ['documents'], filters: ['docType'],
     build: ({ documents }, ctx) => {
       const rows = documents.filter((d) => d.status !== 'archived' && (!ctx.filters.docType || d.docType === ctx.filters.docType))
-        .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
+        .sort((a, b) => tsMillis(a.createdAt) - tsMillis(b.createdAt));
       return {
         sections: [{
           columns: [

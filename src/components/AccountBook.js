@@ -1,21 +1,21 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Card, Table, DatePicker, Space, Row, Col, Statistic, Tag, Typography, Tooltip } from 'antd';
 import dayjs from 'dayjs';
-import { where } from 'firebase/firestore';
+import { where } from '@/lib/q';
 import { COL, TXN_TYPES } from '@/lib/constants';
-import { fmtDate, round2, sum } from '@/lib/format';
-import { useLiveQuery } from '@/lib/hooks';
+import { fmtDate, round2 } from '@/lib/format';
 import { useAppData } from '@/contexts/AppDataContext';
 import { Money } from './common';
 import ExportButtons from './ExportButtons';
-import { withRunningBalance, fyOpeningFor } from '@/services/ledger';
+import ServerPager, { ServerError } from './ServerPager';
+import { fyOpeningFor } from '@/services/ledger';
 import { ledgerExportCols } from '@/lib/exportCols';
 import { defaultRange } from '@/lib/usePeriodList';
-import { useYearStats } from '@/lib/useYearStats';
-import { accountOpeningAtMonth } from '@/services/stats';
+import { useServerTable, useAsyncValue } from '@/lib/useServerTable';
+import { useBookBalance, balanceBefore, bookOrder } from '@/lib/useBookBalance';
 import { useLang } from '@/i18n/LangContext';
 
 export const sourceLink = (t) => {
@@ -29,38 +29,32 @@ export default function AccountBook({ account, title }) {
   const { t: tr } = useLang();
   const app = useAppData();
   const fy = app.selectedFy;
-  // default: last 2 months. Lines are loaded from the 1st of the start month; that month's
-  // opening comes from the year summary → no need to download the whole year.
+  // default: previous + current month. Only 100 lines per page are downloaded; opening / totals /
+  // closing are server-side sums, so the book stays fast with any number of entries.
   const [range, setRange] = useState(() => { const r = defaultRange(fy); return r.from ? [r.from, r.to] : null; });
   useEffect(() => { const r = defaultRange(fy); setRange(r.from ? [r.from, r.to] : null); }, [fy?.id]);
-  const { stats, loading: statsLoading } = useYearStats(fy);
-  const useStats = !!(range && stats);
-  // wait for the summary before querying – otherwise the whole year would be downloaded first
-  const qFrom = useStats ? `${range[0].slice(0, 7)}-01` : null;
-  const { data: raw, loading } = useLiveQuery(
-    account && fy && !(range && statsLoading) ? COL.transactions : null,
-    useStats
-      ? [where('accountId', '==', account?.id || '-'), where('date', '>=', qFrom), where('date', '<=', range[1])]
-      : [where('financialYearId', '==', fy?.id || '-'), where('accountId', '==', account?.id || '-')],
-    [fy?.id, account?.id, qFrom || '', useStats ? range[1] : ''],
-  );
-  const data = useMemo(() => raw.filter((t) => t.financialYearId === fy?.id), [raw, fy?.id]);
-
-  const { rows, opening, periodOpening, closing } = useMemo(() => {
-    const op = fy && account ? fyOpeningFor(fy, account) : 0;
-    const startOp = useStats ? accountOpeningAtMonth({ fy, account, stats, monthKey: qFrom.slice(0, 7) }) : op;
-    const all = withRunningBalance(data, startOp);
-    if (!range) return { rows: all, opening: op, periodOpening: op, closing: all.length ? all[all.length - 1].balance : op };
-    const [from, to] = range;
-    const before = all.filter((t) => t.date < from);
-    const pOpen = before.length ? before[before.length - 1].balance : startOp;
-    const inRange = all.filter((t) => t.date >= from && t.date <= to);
-    return { rows: inRange, opening: op, periodOpening: pOpen, closing: inRange.length ? inRange[inRange.length - 1].balance : pOpen };
-  }, [data, fy, account, range, stats, useStats, qFrom]);
-
-  const totalIn = sum(rows, (t) => t.credit);
-  const totalOut = sum(rows, (t) => t.debit);
-  const exportRows = [{ date: range ? range[0] : fy?.startDate, description: tr('Opening balance'), balance: periodOpening }, ...rows.map((r) => ({ ...r, type: tr(TXN_TYPES[r.type] || r.type) }))];
+  const cons = [where('financialYearId', '==', fy?.id || '-'), where('accountId', '==', account?.id || '-')];
+  if (range) cons.push(where('date', '>=', range[0]), where('date', '<=', range[1]));
+  const key = JSON.stringify([fy?.id, account?.id, range]);
+  const table = useServerTable(COL.transactions, cons, { order: bookOrder('asc'), key, enabled: !!(fy && account) });
+  const rows = useBookBalance(table, { fy, account, enabled: !!(fy && account), dir: 'asc' });
+  const opening = fy && account ? fyOpeningFor(fy, account) : 0;
+  const summary = useAsyncValue(async () => {
+    if (!fy || !account) return null;
+    const [pOpen, t] = await Promise.all([balanceBefore(fy, account, range?.[0]), table.sumOf(['credit', 'debit'])]);
+    return { periodOpening: pOpen, totalIn: round2(t.credit || 0), totalOut: round2(t.debit || 0) };
+  }, [key, table.rows], null);
+  const periodOpening = summary?.periodOpening ?? opening;
+  const totalIn = summary?.totalIn || 0;
+  const totalOut = summary?.totalOut || 0;
+  const closing = round2(periodOpening + totalIn - totalOut);
+  // Export / Print: every line of the period with its running balance
+  const getExportRows = async () => {
+    const all = await table.fetchAll();
+    let bal = periodOpening;
+    const lines = all.map((r) => { bal = round2(bal + (r.credit || 0) - (r.debit || 0)); return { ...r, balance: bal, type: tr(TXN_TYPES[r.type] || r.type) }; });
+    return [{ id: 'opening', date: range ? range[0] : fy?.startDate, description: tr('Opening balance'), balance: periodOpening }, ...lines];
+  };
 
   return (
     <>
@@ -88,19 +82,23 @@ export default function AccountBook({ account, title }) {
               title={`${title} – FY ${fy?.id}`}
               subtitle={range ? `${fmtDate(range[0])} to ${fmtDate(range[1])}` : `${fmtDate(fy?.startDate)} to ${fmtDate(fy?.endDate)}`}
               columns={ledgerExportCols}
-              rows={exportRows}
+              rows={[]}
+              getRows={getExportRows}
+              count={table.total === null ? null : table.total + 1}
               totals={{ description: tr('Total / Closing'), credit: totalIn, debit: totalOut, balance: closing }}
             />
           </Space>
         )}
       >
+        <ServerError table={table} />
         <Table
           rowKey="id"
           size="small"
-          loading={loading}
+          loading={table.loading}
           dataSource={rows}
           scroll={{ x: 900 }}
-          pagination={{ defaultPageSize: 50, showSizeChanger: true }}
+          pagination={false}
+          footer={() => <ServerPager table={table} />}
           rowClassName={(r) => (r.status === 'reversed' ? 'muted' : '')}
           columns={[
             { title: tr('Date'), dataIndex: 'date', render: fmtDate, width: 100 },

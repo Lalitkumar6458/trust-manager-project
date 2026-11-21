@@ -38,7 +38,7 @@ export function BackupCard() {
         <Alert
           type="info"
           showIcon
-          title={tr('Also turn on automatic daily backups in the Firebase console (Firestore → Disaster recovery → Backups) – see README.')}
+          title={tr('The server also takes an automatic database + files backup every night (deploy/backup.sh) – see README.')}
         />
       </Space>
     </Card>

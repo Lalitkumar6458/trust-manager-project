@@ -7,10 +7,12 @@ out
 service-account*.json
 *firebase-adminsdk*.json
 *-credentials.json
-functions/node_modules
-functions/lib
-.firebase
+hash-config*.txt
+migration-temp-passwords.csv
+# uploaded files live on the server (backed up by deploy/backup.sh)
+uploads/
 *.log
 .DS_Store
 # local backups downloaded from Settings → Backup
 trust-backup-*.xlsx
+*.sql.gz

@@ -7,7 +7,7 @@ import {
 } from 'antd';
 import { PlusOutlined, DeleteOutlined, FileSearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { where } from 'firebase/firestore';
+import { where } from '@/lib/q';
 import { COL, AUDIT_STATUS, STATUS_META } from '@/lib/constants';
 import { round2, sum } from '@/lib/format';
 import { useLiveQuery, useAction } from '@/lib/hooks';
@@ -17,8 +17,7 @@ import { PageHeader, Guard, Money, StatusTag, useReasonPrompt } from '@/componen
 import DocumentsPanel from '@/components/DocumentsPanel';
 import { periodSummary } from '@/services/accounting';
 import { updateAudit, saveFyFields } from '@/services/closing';
-import { getCountFromServer, query, collection } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { countDocs } from '@/lib/api';
 import { useYearStats } from '@/lib/useYearStats';
 import { seriesFromStats } from '@/services/stats';
 import { useLang } from '@/i18n/LangContext';
@@ -70,9 +69,9 @@ export default function AuditPage() {
   const [donorCount, setDonorCount] = useState('—');
   useEffect(() => {
     if (!fy) return;
-    getCountFromServer(query(collection(db, COL.donors), where(`fyTotals.${fy.id.replace('-', '_')}`, '>', 0)))
-      .then((r) => setDonorCount(r.data().count)).catch(() => setDonorCount('—'));
-  }, [fy?.id, stats?.updatedAt?.seconds]);
+    countDocs(COL.donors, [where(`fyTotals.${fy.id.replace('-', '_')}`, '>', 0)])
+      .then((n) => setDonorCount(n)).catch(() => setDonorCount('—'));
+  }, [fy?.id, stats?.updatedAt]);
   const audit = fy?.audit || { status: 'draft' };
   const editable = can('audit.manage') && fy?.status !== 'finalized';
 

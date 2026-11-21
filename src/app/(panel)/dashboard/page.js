@@ -2,15 +2,15 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Card, Col, Row, Statistic, Table, Tag, Typography, List, Empty, Alert } from 'antd';
+import { Card, Col, Row, Statistic, Table, Tag, Typography, List, Empty, Alert, Button, Space } from 'antd';
 import {
-  GiftOutlined, WalletOutlined, BankOutlined, DollarOutlined, FundOutlined, ClockCircleOutlined, TeamOutlined, FileDoneOutlined,
+  GiftOutlined, WalletOutlined, ThunderboltOutlined, PlusOutlined, CalendarOutlined, BankOutlined, DollarOutlined, FundOutlined, ClockCircleOutlined, TeamOutlined, FileDoneOutlined,
 } from '@ant-design/icons';
-import { where, orderBy, limit, getCountFromServer, getAggregateFromServer, query, collection, sum as fsSum } from 'firebase/firestore';
+import { where, orderBy, limit } from '@/lib/q';
+import { countDocs, sumDocs } from '@/lib/api';
 import dayjs from 'dayjs';
-import { db } from '@/lib/firebase';
 import { COL } from '@/lib/constants';
-import { fmtDate, money0, sum } from '@/lib/format';
+import { fmtDate, money0, sum, todayStr } from '@/lib/format';
 import { useLiveQuery } from '@/lib/hooks';
 import { useAuth } from '@/contexts/AuthContext';
 import { useAppData } from '@/contexts/AppDataContext';
@@ -29,6 +29,56 @@ function Kpi({ title, value, icon, color, sub, href }) {
     </Card>
   );
   return href ? <Link href={href}>{body}</Link> : body;
+}
+
+const LIVE = ['submitted', 'verified', 'approved'];
+
+/** "Aaj ka hisaab" – today's collection, cash / online split, today's payments */
+function TodayCard({ cashBal, showMoney, pending }) {
+  const { t: tr } = useLang();
+  const { can } = useAuth();
+  const [d, setD] = useState(null);
+  const today = todayStr();
+  useEffect(() => {
+    let off = false;
+    const load = async () => {
+      const out = {};
+      const tryIt = async (k, fn) => { try { out[k] = await fn(); } catch { out[k] = null; } };
+      await Promise.all([
+        tryIt('don', () => sumDocs(COL.donations, [where('date', '==', today), where('status', 'in', LIVE)], ['amount'])),
+        tryIt('donN', () => countDocs(COL.donations, [where('date', '==', today), where('status', 'in', LIVE)])),
+        tryIt('cash', () => sumDocs(COL.donations, [where('date', '==', today), where('status', 'in', LIVE), where('paymentMode', '==', 'Cash')], ['amount'])),
+        tryIt('exp', () => sumDocs(COL.expenses, [where('paidDate', '==', today), where('status', '==', 'paid')], ['amount'])),
+      ]);
+      if (!off) setD(out);
+    };
+    load();
+    const h = setInterval(load, 60_000);
+    return () => { off = true; clearInterval(h); };
+  }, [today]);
+  const total = d?.don?.amount || 0;
+  const cash = d?.cash?.amount || 0;
+  return (
+    <Card
+      size="small"
+      style={{ marginBottom: 12, background: 'linear-gradient(90deg, #fff7e6, #fff)' }}
+      title={<Space><CalendarOutlined />{tr('Today')} · {fmtDate(today)}</Space>}
+      extra={(
+        <Space wrap>
+          {can('donations.create') ? <Link href="/donations/quick"><Button type="primary" icon={<ThunderboltOutlined />}>{tr('Quick entry')}</Button></Link> : null}
+          {can('donations.create') ? <Link href="/donations/new"><Button icon={<PlusOutlined />}>{tr('New donation')}</Button></Link> : null}
+        </Space>
+      )}
+    >
+      <Row gutter={[12, 12]}>
+        <Col xs={12} md={6}><Statistic title={tr('Collection today')} value={money0(total)} styles={{ content: { color: SERIES.donation, fontSize: 22 } }} /><Typography.Text type="secondary" style={{ fontSize: 12 }}>{tr('{n} receipts', { n: d?.donN ?? 0 })}</Typography.Text></Col>
+        <Col xs={12} md={6}><Statistic title={tr('Cash / Online')} value={`${money0(cash)} / ${money0(total - cash)}`} styles={{ content: { fontSize: 18 } }} /></Col>
+        <Col xs={12} md={6}><Statistic title={tr('Paid today')} value={money0(d?.exp?.amount || 0)} styles={{ content: { color: SERIES.expense, fontSize: 22 } }} /></Col>
+        {showMoney ? <Col xs={12} md={6}><Statistic title={tr('Cash in hand')} value={money0(cashBal)} styles={{ content: { fontSize: 22 } }} /><Link href="/cash-count" style={{ fontSize: 12 }}>{tr('Count cash')} →</Link></Col>
+          : <Col xs={12} md={6}><Statistic title={tr('Pending verification / approval')} value={pending} /></Col>}
+      </Row>
+    </Card>
+  );
 }
 
 export default function DashboardPage() {
@@ -51,15 +101,15 @@ export default function DashboardPage() {
       const out = {};
       const tryIt = async (k, fn) => { try { out[k] = await fn(); } catch { /* index still building / no access */ } };
       await Promise.all([
-        tryIt('donors', async () => (await getCountFromServer(collection(db, COL.donors))).data().count),
-        tryIt('donAll', async () => (await getAggregateFromServer(query(collection(db, COL.donations), where('status', '==', 'approved')), { total: fsSum('amount') })).data().total || 0),
-        tryIt('expAll', async () => (await getAggregateFromServer(query(collection(db, COL.expenses), where('status', '==', 'paid')), { total: fsSum('amount') })).data().total || 0),
-        tryIt('fyCount', async () => (await getCountFromServer(query(collection(db, COL.donations), where('financialYearId', '==', fy.id)))).data().count),
-        tryIt('fyVoid', async () => (await getCountFromServer(query(collection(db, COL.donations), where('financialYearId', '==', fy.id), where('status', '==', 'void')))).data().count),
+        tryIt('donors', () => countDocs(COL.donors)),
+        tryIt('donAll', async () => (await sumDocs(COL.donations, [where('status', '==', 'approved')], ['amount'])).amount || 0),
+        tryIt('expAll', async () => (await sumDocs(COL.expenses, [where('status', '==', 'paid')], ['amount'])).amount || 0),
+        tryIt('fyCount', () => countDocs(COL.donations, [where('financialYearId', '==', fy.id)])),
+        tryIt('fyVoid', () => countDocs(COL.donations, [where('financialYearId', '==', fy.id), where('status', '==', 'void')])),
       ]);
       setAgg(out);
     })();
-  }, [fy, stats?.updatedAt?.seconds]);
+  }, [fy, stats?.updatedAt]);
 
   const s = useMemo(() => (fy ? seriesFromStats({ fy, accounts: app.accounts, stats }) : null), [fy, app.accounts, stats]);
   const series = useMemo(() => (s ? s.months.map((r) => ({ ...r, label: dayjs(`${r.monthKey}-01`).format('MMM YY') })) : []), [s, lang]);
@@ -82,6 +132,7 @@ export default function DashboardPage() {
       {statsLoading && !stats ? <Alert type="info" showIcon style={{ marginBottom: 12 }} title={tr('Preparing the year summary (one time only)…')} /> : null}
       {missing && !canBuild ? <Alert type="warning" showIcon style={{ marginBottom: 12 }} title={tr('The year summary is not prepared yet. It is created automatically when the Accountant / Super Admin opens the dashboard.')} /> : null}
       {!app.accounts.length ? <Alert type="info" showIcon style={{ marginBottom: 12 }} title={tr('Start by adding your bank accounts (Bank Accounts menu) and checking categories in Settings.')} /> : null}
+      <TodayCard cashBal={cashBal} showMoney={showMoney} pending={pendingDon.length + pendingExp.length} />
       <Row gutter={[12, 12]}>
         <Col xs={12} md={8} xl={6}><Kpi title={tr('Total donation received')} icon={<GiftOutlined />} value={money0(agg.donAll)} color={SERIES.donation} sub={tr('All years (approved)')} href="/donations" /></Col>
         <Col xs={12} md={8} xl={6}><Kpi title={tr('Total expense')} icon={<WalletOutlined />} value={money0(agg.expAll)} color={SERIES.expense} sub={tr('All years (paid)')} href="/expenses" /></Col>

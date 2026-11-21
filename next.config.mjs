@@ -11,8 +11,8 @@ const securityHeaders = [
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  // firebase-admin is only used inside API route handlers (server side)
-  serverExternalPackages: ['firebase-admin'],
+  // PostgreSQL driver runs on the server only
+  serverExternalPackages: ['pg', '@react-pdf/renderer', 'nodemailer', 'qrcode'],
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
   },

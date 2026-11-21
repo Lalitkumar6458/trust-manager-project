@@ -8,7 +8,7 @@ import {
 } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { where, orderBy, limit, Timestamp } from 'firebase/firestore';
+import { where, orderBy, limit, Timestamp } from '@/lib/q';
 import { COL, PAYMENT_MODES, STATUS_META, DOC_TYPES, PAYEE_TYPES } from '@/lib/constants';
 import { fmtDate, fyRange, round2 } from '@/lib/format';
 import { useAuth } from '@/contexts/AuthContext';

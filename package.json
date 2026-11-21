@@ -1,20 +1,20 @@
 {
   "name": "trust-manager",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Trust Donation & Accounting Management Web Panel (Next.js + Firebase)",
+  "description": "Trust Donation & Accounting Management Web Panel (Next.js + PostgreSQL)",
   "scripts": {
-    "i18n:check": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/i18n-check.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "db:migrate": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/db-migrate.mjs",
     "create-admin": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/create-super-admin.mjs",
-    "deploy:rules": "firebase deploy --only firestore:rules,firestore:indexes,storage",
-    "deploy:firestore": "firebase deploy --only firestore:rules,firestore:indexes",
-    "deploy:functions": "cd functions && npm install && cd .. && firebase deploy --only functions",
-    "deploy:indexes": "firebase deploy --only firestore:indexes",
-    "deploy:storage": "firebase deploy --only storage",
-    "deploy:backend": "firebase deploy --only firestore:rules,firestore:indexes,storage"
+    "control:owner": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/create-owner.mjs",
+    "migrate:firebase": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/migrate-from-firebase.mjs",
+    "i18n:check": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/i18n-check.mjs",
+    "seed:demo": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/seed-demo.mjs",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./tests/alias.mjs --test tests/unit.test.mjs",
+    "test:smoke": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/smoke-test.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.4",
@@ -23,14 +23,18 @@
     "antd": "^6.6.5",
     "dayjs": "^1.11.23",
     "exceljs": "^4.4.0",
-    "firebase": "^12.19.0",
-    "firebase-admin": "^14.5.0",
     "next": "^16.3.8",
+    "nodemailer": "^6.10.1",
     "papaparse": "^5.7.0",
+    "pg": "^8.16.3",
+    "qrcode": "^1.5.4",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "recharts": "^3.10.1",
     "server-only": "^0.0.1"
+  },
+  "optionalDependencies": {
+    "firebase-admin": "^14.5.0"
   },
   "engines": {
     "node": ">=20.9"

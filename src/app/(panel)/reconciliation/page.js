@@ -1,14 +1,14 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import {
-  App, Button, Card, Table, Modal, Select, Upload, Space, Tag, Row, Col, Statistic, Alert, Form, InputNumber, Tabs, Typography, Popconfirm, Empty,
+  App, Button, Card, Table, Modal, Select, Upload, Space, Tag, Row, Col, Statistic, Alert, Form, InputNumber, Tabs, Typography, Popconfirm, Empty, Input, Radio, Divider,
 } from 'antd';
 import { UploadOutlined, ThunderboltOutlined, LinkOutlined, DisconnectOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
-import { where } from 'firebase/firestore';
+import { where } from '@/lib/q';
 import { COL, TXN_TYPES } from '@/lib/constants';
 import dayjs from 'dayjs';
-import { fmtDate, round2, sum, fyIdOf } from '@/lib/format';
+import { fmtDate, round2, fyIdOf } from '@/lib/format';
 import { useLiveQuery, useAction } from '@/lib/hooks';
 import { useAuth } from '@/contexts/AuthContext';
 import { useAppData } from '@/contexts/AppDataContext';
@@ -16,8 +16,12 @@ import { PageHeader, Guard, Money, StatusTag, useReasonPrompt } from '@/componen
 import {
   parseStatementFile, guessMapping, mapRows, saveStatement, autoMatch, manualMatch, unmatch, setIgnored,
 } from '@/services/reconciliation';
-import { withRunningBalance, fyOpeningFor } from '@/services/ledger';
+import { useServerTable, useAsyncValue } from '@/lib/useServerTable';
+import { balanceBefore, bookOrder } from '@/lib/useBookBalance';
+import ServerPager, { ServerError } from '@/components/ServerPager';
 import { useLang } from '@/i18n/LangContext';
+import { rpc } from '@/lib/api';
+import PartySelect from '@/components/PartySelect';
 
 function ImportModal({ open, onClose, onImported }) {
   const { t: tr } = useLang();
@@ -101,6 +105,56 @@ function ImportModal({ open, onClose, onImported }) {
   );
 }
 
+/** bank line that is not in the books yet → create the donation / bank charge / interest entry and match it */
+function CreateFromLine({ line, statement, onDone }) {
+  const { t: tr, pick } = useLang();
+  const { can } = useAuth();
+  const app = useAppData();
+  const [run, busy] = useAction();
+  const [donorMode, setDonorMode] = useState('existing');
+  const [donorId, setDonorId] = useState(null);
+  const [name, setName] = useState('');
+  const [categoryId, setCategoryId] = useState(null);
+  const [purpose, setPurpose] = useState('');
+  const isIn = line.credit > 0;
+  const canDon = can('donations.approve') && can('donations.verify');
+  const makeDonation = () => run(async () => {
+    await rpc('rec.donationFromLine', {
+      statementId: statement.id, lineId: line.id, categoryId, purpose,
+      donorId: donorMode === 'existing' ? donorId : null,
+      newDonor: donorMode === 'new' ? { name: name.trim(), donorType: 'Individual' } : null,
+    });
+    onDone();
+  }, 'Donation created and matched');
+  const makeLedger = (type) => run(async () => { await rpc('rec.ledgerFromLine', { statementId: statement.id, lineId: line.id, type }); onDone(); }, 'Entry created and matched');
+  return (
+    <Card size="small" style={{ marginTop: 12, background: '#fafafa' }} title={tr('Not in the books yet? Create it from this bank line')}>
+      {isIn && canDon ? (
+        <>
+          <Radio.Group value={donorMode} onChange={(e) => setDonorMode(e.target.value)} optionType="button" size="small" options={[{ value: 'existing', label: tr('Existing donor') }, { value: 'new', label: tr('New donor') }]} />
+          <Row gutter={8} style={{ marginTop: 8 }}>
+            <Col xs={24} md={9}>{donorMode === 'existing' ? <PartySelect kind="donor" value={donorId} onChange={setDonorId} /> : <Input placeholder={tr('Donor name (श्री)')} value={name} onChange={(e) => setName(e.target.value)} />}</Col>
+            <Col xs={24} md={7}><Select style={{ width: '100%' }} placeholder={tr('Category')} value={categoryId} onChange={setCategoryId} showSearch={{ optionFilterProp: 'label' }} options={app.activeDonationCategories.map((c) => ({ value: c.id, label: pick(c.name, c.nameHi) }))} /></Col>
+            <Col xs={24} md={8}><Input placeholder={tr('Purpose / उद्देश्य (optional)')} value={purpose} onChange={(e) => setPurpose(e.target.value)} /></Col>
+          </Row>
+          <Button type="primary" style={{ marginTop: 8 }} loading={busy} disabled={!categoryId || (donorMode === 'existing' ? !donorId : !name.trim())} onClick={makeDonation}>
+            {tr('Create approved donation ₹{v0} and match', { v0: line.credit })}
+          </Button>
+          <Divider style={{ margin: '12px 0' }} />
+        </>
+      ) : null}
+      {can('ledger.manual') ? (
+        <Space wrap>
+          {isIn ? <Button loading={busy} onClick={() => makeLedger('interest')}>{tr('Bank interest')}</Button> : null}
+          {isIn ? <Button loading={busy} onClick={() => makeLedger('other_income')}>{tr('Other income')}</Button> : null}
+          {!isIn ? <Button loading={busy} onClick={() => makeLedger('bank_charges')}>{tr('Bank charges')}</Button> : null}
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{tr('Expenses / payments: add them in Expenses, then match.')}</Typography.Text>
+        </Space>
+      ) : null}
+    </Card>
+  );
+}
+
 function MatchModal({ line, statement, onClose }) {
   const { t: tr } = useLang();
   const { user } = useAuth();
@@ -137,6 +191,7 @@ function MatchModal({ line, statement, onClose }) {
           { title: '', width: 80, render: (_, t) => <Button size="small" type={t.diff < 0.01 ? 'primary' : 'default'} loading={busy} onClick={async () => { if (await run(() => manualMatch({ statementId: statement.id, lineId: line.id, txnId: t.id, user }), 'Matched')) onClose(); }}>{tr('Match')}</Button> },
         ]}
       />
+      {line ? <CreateFromLine line={line} statement={statement} onDone={onClose} /> : null}
     </Modal>
   );
 }
@@ -153,27 +208,31 @@ export default function ReconciliationPage() {
   const [ask, reasonModal] = useReasonPrompt();
   const { data: statements } = useLiveQuery(COL.bankStatements, [], []);
   const st = statements.find((s) => s.id === selected) || null;
-  const { data: lines, loading } = useLiveQuery(st ? COL.statementLines : null, [where('statementId', '==', st?.id || '-')], [st?.id]);
-  // only the statement's financial year (not every year of this account)
+  // statement lines and unreconciled ledger lines: 100 per page from the server; balances / totals are server-side sums
+  const linesTable = useServerTable(COL.statementLines, [where('statementId', '==', st?.id || '-')], { order: ['seq', 'asc'], key: st?.id, enabled: !!st });
+  const { loading } = linesTable;
   const stFy = st?.periodTo ? fyIdOf(st.periodTo) : '-';
-  const { data: acctTxns } = useLiveQuery(st ? COL.transactions : null, [where('accountId', '==', st?.accountId || '-'), where('financialYearId', '==', stFy)], [st?.accountId, stFy]);
+  const bookCons = [where('accountId', '==', st?.accountId || '-'), where('financialYearId', '==', stFy), where('reconciled', '==', false), where('status', '==', 'active')];
+  if (st) bookCons.push(where('date', '>=', st.periodFrom), where('date', '<=', st.periodTo));
+  const bookTable = useServerTable(COL.transactions, bookCons, { order: bookOrder('asc'), key: JSON.stringify([st?.id, st?.accountId, st?.periodFrom, st?.periodTo]), enabled: !!st });
 
   const sortedStatements = [...statements].sort((a, b) => (b.periodTo || '').localeCompare(a.periodTo || ''));
-  const sortedLines = useMemo(() => [...lines].sort((a, b) => a.seq - b.seq), [lines]);
-
-  const systemBal = useMemo(() => {
-    if (!st) return 0;
-    const acc = app.accounts.find((a) => a.id === st.accountId);
+  const figures = useAsyncValue(async () => {
+    if (!st) return null;
+    const acc = app.accounts.find((a) => a.id === st.accountId) || { id: st.accountId };
     const fy = app.fys.find((f) => st.periodTo >= f.startDate && st.periodTo <= f.endDate) || app.selectedFy;
-    const fyTx = acctTxns.filter((t) => t.financialYearId === fy?.id && t.date <= st.periodTo);
-    const r = withRunningBalance(fyTx, fyOpeningFor(fy, acc || { id: st.accountId }));
-    return r.length ? r[r.length - 1].balance : fyOpeningFor(fy, acc || { id: st.accountId });
-  }, [st, acctTxns, app.accounts, app.fys, app.selectedFy]);
-
-  const unreconciledBook = useMemo(() => (st ? acctTxns.filter((t) => !t.reconciled && t.date >= st.periodFrom && t.date <= st.periodTo && t.status !== 'reversed') : []), [st, acctTxns]);
+    const dayAfter = dayjs(st.periodTo).add(1, 'day').format('YYYY-MM-DD');
+    const [sys, book, un] = await Promise.all([
+      balanceBefore(fy, acc, dayAfter), // balance at the end of the statement period
+      bookTable.sumOf(['credit', 'debit']),
+      linesTable.sumOf(['credit', 'debit'], [where('status', '==', 'unmatched')]),
+    ]);
+    return { systemBal: sys, book, un };
+  }, [st?.id, st?.matchedCount, st?.ignoredCount, bookTable.rows, linesTable.rows], null);
+  const systemBal = figures?.systemBal ?? 0;
+  const sortedLines = linesTable.rows;
+  const unreconciledBook = bookTable.rows;
   const bankBal = st?.closingBalance ?? null;
-  const unmatched = sortedLines.filter((l) => l.status === 'unmatched');
-
   return (
     <Guard perm="reconciliation.view">
       <PageHeader
@@ -220,7 +279,7 @@ export default function ReconciliationPage() {
                   showIcon
                   style={{ marginBottom: 12 }}
                   title={tr('Difference found')}
-                  description={tr('In bank but not in books: deposits ₹{v0}, withdrawals ₹{v1}. In books but not in bank (period): in ₹{v2}, out ₹{v3}. Record missing bank charges / interest from Transactions, or match manually.', { v0: sum(unmatched, (l) => l.credit), v1: sum(unmatched, (l) => l.debit), v2: sum(unreconciledBook, (t) => t.credit), v3: sum(unreconciledBook, (t) => t.debit) })}
+                  description={tr('In bank but not in books: deposits ₹{v0}, withdrawals ₹{v1}. In books but not in bank (period): in ₹{v2}, out ₹{v3}. Record missing bank charges / interest from Transactions, or match manually.', { v0: round2(figures?.un?.credit || 0), v1: round2(figures?.un?.debit || 0), v2: round2(figures?.book?.credit || 0), v3: round2(figures?.book?.debit || 0) })}
                 />
               ) : null}
               <Card
@@ -231,7 +290,7 @@ export default function ReconciliationPage() {
                 <Tabs
                   items={[
                     {
-                      key: 'lines', label: tr('Statement lines ({v0})', { v0: sortedLines.length }),
+                      key: 'lines', label: tr('Statement lines ({v0})', { v0: linesTable.total ?? st.lineCount }),
                       children: (
                         <Table
                           size="small"
@@ -239,7 +298,9 @@ export default function ReconciliationPage() {
                           loading={loading}
                           dataSource={sortedLines}
                           scroll={{ x: 800 }}
-                          pagination={{ defaultPageSize: 50 }}
+                          pagination={false}
+                          title={linesTable.error ? () => <ServerError table={linesTable} /> : undefined}
+                          footer={() => <ServerPager table={linesTable} />}
                           columns={[
                             { title: tr('Date'), dataIndex: 'date', render: fmtDate, width: 100 },
                             { title: tr('Description'), dataIndex: 'description', ellipsis: true },
@@ -265,13 +326,16 @@ export default function ReconciliationPage() {
                       ),
                     },
                     {
-                      key: 'book', label: tr('In books, not in bank ({v0})', { v0: unreconciledBook.length }),
+                      key: 'book', label: tr('In books, not in bank ({v0})', { v0: bookTable.total ?? '…' }),
                       children: (
                         <Table
                           size="small"
                           rowKey="id"
+                          loading={bookTable.loading}
                           dataSource={unreconciledBook}
                           pagination={false}
+                          title={bookTable.error ? () => <ServerError table={bookTable} /> : undefined}
+                          footer={() => <ServerPager table={bookTable} />}
                           columns={[
                             { title: tr('Date'), dataIndex: 'date', render: fmtDate },
                             { title: tr('Type'), dataIndex: 'type', render: (t) => tr(TXN_TYPES[t]) },

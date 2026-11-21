@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Card, Form, Input, Button, Typography, Alert, App, Divider, InputNumber, Result, Spin, Segmented } from 'antd';
 import { bootstrapTrust, isBootstrapped } from '@/services/setup';
 import { DEFAULT_TRUST_SETTINGS } from '@/lib/constants';
-import { isFirebaseConfigured } from '@/lib/firebase';
+import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/i18n/LangContext';
 
 export default function SetupPage() {
@@ -14,13 +14,10 @@ export default function SetupPage() {
   const { message } = App.useApp();
   const [state, setState] = useState('checking');
   const [busy, setBusy] = useState(false);
+  const { refresh } = useAuth();
 
   useEffect(() => {
-    if (!isFirebaseConfigured) {
-      setState('noconfig');
-      return;
-    }
-    isBootstrapped().then((b) => setState(b ? 'done' : 'ready')).catch(() => setState('ready'));
+    isBootstrapped().then((b) => setState(b ? 'done' : 'ready')).catch(() => setState('noconfig'));
   }, []);
 
   const onFinish = async (v) => {
@@ -37,6 +34,7 @@ export default function SetupPage() {
           registrationNo: v.registrationNo, registrationDate: v.registrationDate, pan: (v.pan || '').toUpperCase(),
         },
       });
+      await refresh();
       message.success(tr('Setup complete. Welcome!'));
       router.replace('/dashboard');
     } catch (e) {
@@ -47,7 +45,7 @@ export default function SetupPage() {
   };
 
   if (state === 'checking') return <div className="login-bg"><Spin /></div>;
-  if (state === 'noconfig') return <Result status="warning" title={tr('Firebase is not configured')} subTitle="Fill .env.local first (see README)." />;
+  if (state === 'noconfig') return <Result status="warning" title={tr('The server cannot reach the database')} subTitle={tr('Check DATABASE_URL in .env.local and run “npm run db:migrate” (see README).')} />;
   if (state === 'done') {
     return <Result status="info" title={tr('Setup already completed')} subTitle="Ask your Super Admin for a login." extra={<Button type="primary" onClick={() => router.push('/login')}>{tr('Go to login')}</Button>} />;
   }

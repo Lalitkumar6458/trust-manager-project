@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Modal, Form, Input, Select, Row, Col } from 'antd';
+import { Modal, Form, Input, Select, Row, Col, Checkbox } from 'antd';
 import { DONOR_TYPES, ID_TYPES, PAYEE_TYPES } from '@/lib/constants';
 import { PAN_REGEX, MOBILE_REGEX, IFSC_REGEX, GST_REGEX } from '@/lib/format';
 import { useAction } from '@/lib/hooks';
@@ -14,7 +14,7 @@ const ifscRule = { validator: (_, v) => (!v || IFSC_REGEX.test(String(v).toUpper
 const gstRule = { validator: (_, v) => (!v || GST_REGEX.test(String(v).toUpperCase()) ? Promise.resolve() : Promise.reject(new Error('Invalid GSTIN / अमान्य GSTIN'))) };
 const pick = (o, keys) => Object.fromEntries(keys.map((k) => [k, o?.[k] ?? '']));
 
-const DONOR_FIELDS = ['name', 'organizationName', 'donorType', 'mobile', 'email', 'address', 'pan', 'idType', 'idNumber', 'notes'];
+const DONOR_FIELDS = ['name', 'organizationName', 'donorType', 'mobile', 'email', 'address', 'pan', 'idType', 'idNumber', 'notes', 'dob', 'anniversary', 'noMessages'];
 const PAYEE_FIELDS = ['name', 'type', 'mobile', 'email', 'address', 'pan', 'gstin', 'bankAccountNo', 'ifsc', 'bankName', 'notes'];
 
 export function DonorModal({ open, onClose, donor, onSaved }) {
@@ -23,7 +23,7 @@ export function DonorModal({ open, onClose, donor, onSaved }) {
   const [form] = Form.useForm();
   const [run, busy] = useAction();
   useEffect(() => {
-    if (open) form.setFieldsValue(donor ? pick(donor, DONOR_FIELDS) : { donorType: 'Individual' });
+    if (open) form.setFieldsValue(donor ? { ...pick(donor, DONOR_FIELDS), noMessages: !!donor.noMessages } : { donorType: 'Individual' });
   }, [open, donor, form]);
   const submit = async () => {
     const v = await form.validateFields();
@@ -46,6 +46,9 @@ export function DonorModal({ open, onClose, donor, onSaved }) {
           <Col xs={24}><Form.Item name="address" label={tr('Address')}><Input.TextArea rows={2} /></Form.Item></Col>
           <Col xs={24} md={12}><Form.Item name="idType" label={tr('Other ID type')}><Select allowClear options={ID_TYPES.map((d) => ({ value: d, label: tr(d) }))} /></Form.Item></Col>
           <Col xs={24} md={12}><Form.Item name="idNumber" label={tr('ID number')} extra={tr('Collect Aadhaar only where legally appropriate.')}><Input /></Form.Item></Col>
+          <Col xs={12} md={8}><Form.Item name="dob" label={tr('Birthday')}><Input type="date" /></Form.Item></Col>
+          <Col xs={12} md={8}><Form.Item name="anniversary" label={tr('Anniversary')}><Input type="date" /></Form.Item></Col>
+          <Col xs={24} md={8}><Form.Item name="noMessages" valuePropName="checked" label=" "><Checkbox>{tr('No messages to this donor')}</Checkbox></Form.Item></Col>
           <Col xs={24}><Form.Item name="notes" label={tr('Notes')}><Input.TextArea rows={2} /></Form.Item></Col>
         </Row>
       </Form>

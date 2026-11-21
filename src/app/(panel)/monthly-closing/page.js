@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { Card, Table, Button, Tag, Space, Modal, Input, Alert, Typography } from 'antd';
 import { LockOutlined, UnlockOutlined, FileSearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { where } from 'firebase/firestore';
+import { where } from '@/lib/q';
 import { COL } from '@/lib/constants';
 import { fyMonths, fmtDateTime, round2 } from '@/lib/format';
 import { useLiveQuery, useAction } from '@/lib/hooks';

@@ -1,0 +1,36 @@
+# Caddy for the MULTI-SANSTHA setup (deploy/setup-saas.sh installs it in place of Nginx).
+# Every sanstha web address (shortname.yourbrand.in or its own domain) gets a free HTTPS
+# certificate automatically the first time it is opened – but ONLY if the app says the
+# address belongs to a sanstha (/api/control/tls-check). Nothing to do per new sanstha.
+{
+	email __EMAIL__
+	on_demand_tls {
+		ask http://127.0.0.1:3000/api/control/tls-check
+	}
+}
+
+https:// {
+	tls {
+		on_demand
+	}
+	encode gzip
+	request_body {
+		max_size 20MB
+	}
+	header -Server
+
+	# scheduled jobs are called only from the server itself (cron → 127.0.0.1:3000)
+	@cron path /api/cron/*
+	respond @cron 404
+	@tls path /api/control/tls-check
+	respond @tls 404
+
+	@static path /_next/static/*
+	header @static Cache-Control "public, max-age=31536000, immutable"
+
+	reverse_proxy 127.0.0.1:3000 {
+		transport http {
+			read_timeout 120s
+		}
+	}
+}

@@ -48,6 +48,9 @@ export function fyRange(fyId) {
   return { start: `${y}-04-01`, end: `${y + 1}-03-31` };
 }
 export const fyLabel = (fyId) => (fyId ? `FY ${fyId}` : '');
+/** Previous financial year id ('2026-27' → '2025-26') */
+export const prevFyIdOf = (fyId) => { const y = Number(fyId.slice(0, 4)) - 1; return `${y}-${String((y + 1) % 100).padStart(2, '0')}`; };
+
 export function nextFyId(fyId) {
   const y = Number(fyId.slice(0, 4)) + 1;
   return `${y}-${String((y + 1) % 100).padStart(2, '0')}`;

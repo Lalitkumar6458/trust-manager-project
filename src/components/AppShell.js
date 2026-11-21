@@ -10,41 +10,85 @@ import {
   DashboardOutlined, GiftOutlined, TeamOutlined, WalletOutlined, UserSwitchOutlined, ShopOutlined, BankOutlined,
   DollarOutlined, SwapOutlined, FundOutlined, BarChartOutlined, AuditOutlined, CalendarOutlined, ScheduleOutlined,
   SafetyCertificateOutlined, FileTextOutlined, CrownOutlined, UserOutlined, SettingOutlined, HistoryOutlined,
-  LogoutOutlined, GlobalOutlined, CheckOutlined, KeyOutlined, MenuFoldOutlined, MenuUnfoldOutlined, ReconciliationOutlined, LockOutlined,
+  LogoutOutlined, GlobalOutlined, CheckOutlined, KeyOutlined, MenuFoldOutlined, MenuUnfoldOutlined, ReconciliationOutlined, LockOutlined, ThunderboltOutlined, CreditCardOutlined, CalculatorOutlined, HeartOutlined, PieChartOutlined, IdcardOutlined, FireOutlined, HomeOutlined, InboxOutlined, ToolOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '@/contexts/AuthContext';
 import { useAppData } from '@/contexts/AppDataContext';
 import { ROLE_LABELS, ROLE_COLORS } from '@/lib/constants';
-import { isFirebaseConfigured } from '@/lib/firebase';
 import GlobalSearch from './GlobalSearch';
 import NotificationBell from './NotificationBell';
-import { OfflineBanner, YearBanners, ChangePasswordModal, useIdleLogout } from './ShellExtras';
+import { OfflineBanner, YearBanners, ChangePasswordModal, useIdleLogout, InstallAppButton, TwoFactorModal } from './ShellExtras';
+import { LicenseBanner, LockedScreen, FeatureLocked, useFeatureGate } from './LicenseBits';
 import { useLang } from '@/i18n/LangContext';
 
 const { Sider, Header, Content } = Layout;
 
+// grouped side menu (top items first, then folders); FLAT_MENU is used for permissions / highlighting
 const MENU = [
   { key: '/dashboard', icon: <DashboardOutlined />, label: 'Dashboard', perm: 'dashboard.view' },
-  { key: '/donations', icon: <GiftOutlined />, label: 'Donations', perm: 'donations.view' },
-  { key: '/donors', icon: <TeamOutlined />, label: 'Donors', perm: 'donors.view' },
-  { key: '/expenses', icon: <WalletOutlined />, label: 'Expenses', perm: 'expenses.view' },
-  { key: '/beneficiaries', icon: <UserSwitchOutlined />, label: 'Beneficiaries', perm: 'beneficiaries.view' },
-  { key: '/vendors', icon: <ShopOutlined />, label: 'Vendors', perm: 'beneficiaries.view' },
-  { key: '/bank-accounts', icon: <BankOutlined />, label: 'Bank Accounts', perm: 'accounts.view' },
-  { key: '/cash-book', icon: <DollarOutlined />, label: 'Cash Book', perm: 'accounts.view' },
-  { key: '/transactions', icon: <SwapOutlined />, label: 'Transactions / Ledger', perm: 'ledger.view' },
-  { key: '/funds', icon: <FundOutlined />, label: 'Funds / Projects', perm: 'funds.view' },
-  { key: '/reports', icon: <BarChartOutlined />, label: 'Reports', perm: 'reports.view' },
-  { key: '/reconciliation', icon: <ReconciliationOutlined />, label: 'Bank Reconciliation', perm: 'reconciliation.view' },
-  { key: '/monthly-closing', icon: <ScheduleOutlined />, label: 'Monthly Closing', perm: 'closing.view' },
-  { key: '/financial-years', icon: <CalendarOutlined />, label: 'Financial Year', perm: 'fy.view' },
-  { key: '/audit', icon: <SafetyCertificateOutlined />, label: 'Audit', perm: 'audit.view' },
-  { key: '/documents', icon: <FileTextOutlined />, label: 'Documents', perm: 'documents.view' },
-  { key: '/trustees', icon: <CrownOutlined />, label: 'Trustees', perm: 'trustees.view' },
-  { key: '/users', icon: <UserOutlined />, label: 'Users & Roles', perm: 'users.manage' },
-  { key: '/settings', icon: <SettingOutlined />, label: 'Settings', perm: 'settings.manage' },
-  { key: '/audit-logs', icon: <HistoryOutlined />, label: 'Audit Logs', perm: 'auditLogs.view' },
+  { key: '/donations/quick', icon: <ThunderboltOutlined />, label: 'Quick entry', perm: 'donations.create' },
+  {
+    key: 'g-don', icon: <GiftOutlined />, label: 'Donations',
+    children: [
+      { key: '/donations', icon: <GiftOutlined />, label: 'Donations', perm: 'donations.view' },
+      { key: '/online-donations', icon: <GlobalOutlined />, label: 'Online donations', perm: 'online.view' },
+      { key: '/donors', icon: <TeamOutlined />, label: 'Donors', perm: 'donors.view' },
+      { key: '/pledges', icon: <HeartOutlined />, label: 'Sankalp / pledges', perm: 'pledges.view' },
+    ],
+  },
+  {
+    key: 'g-exp', icon: <WalletOutlined />, label: 'Expenses',
+    children: [
+      { key: '/expenses', icon: <WalletOutlined />, label: 'Expenses', perm: 'expenses.view' },
+      { key: '/beneficiaries', icon: <UserSwitchOutlined />, label: 'Beneficiaries', perm: 'beneficiaries.view' },
+      { key: '/vendors', icon: <ShopOutlined />, label: 'Vendors', perm: 'beneficiaries.view' },
+      { key: '/payroll', icon: <IdcardOutlined />, label: 'Staff & salary', perm: 'payroll.view' },
+    ],
+  },
+  {
+    key: 'g-acc', icon: <BankOutlined />, label: 'Accounts',
+    children: [
+      { key: '/bank-accounts', icon: <BankOutlined />, label: 'Bank Accounts', perm: 'accounts.view' },
+      { key: '/cash-book', icon: <DollarOutlined />, label: 'Cash Book', perm: 'accounts.view' },
+      { key: '/cash-count', icon: <CalculatorOutlined />, label: 'Cash count', perm: 'cash.count' },
+      { key: '/transactions', icon: <SwapOutlined />, label: 'Transactions / Ledger', perm: 'ledger.view' },
+      { key: '/funds', icon: <FundOutlined />, label: 'Funds / Projects', perm: 'funds.view' },
+      { key: '/reconciliation', icon: <ReconciliationOutlined />, label: 'Bank Reconciliation', perm: 'reconciliation.view' },
+      { key: '/monthly-closing', icon: <ScheduleOutlined />, label: 'Monthly Closing', perm: 'closing.view' },
+      { key: '/financial-years', icon: <CalendarOutlined />, label: 'Financial Year', perm: 'fy.view' },
+      { key: '/budget', icon: <PieChartOutlined />, label: 'Budget', perm: 'budget.view' },
+    ],
+  },
+  {
+    key: 'g-tmp', icon: <FireOutlined />, label: 'Temple & services',
+    children: [
+      { key: '/seva', icon: <FireOutlined />, label: 'Seva / pooja booking', perm: 'seva.view' },
+      { key: '/bookings', icon: <HomeOutlined />, label: 'Hall / room booking', perm: 'bookings.view' },
+      { key: '/inventory', icon: <InboxOutlined />, label: 'Store / inventory', perm: 'inventory.view' },
+      { key: '/assets', icon: <ToolOutlined />, label: 'Asset register', perm: 'assets.view' },
+    ],
+  },
+  {
+    key: 'g-rep', icon: <BarChartOutlined />, label: 'Reports & audit',
+    children: [
+      { key: '/reports', icon: <BarChartOutlined />, label: 'Reports', perm: 'reports.view' },
+      { key: '/audit', icon: <SafetyCertificateOutlined />, label: 'Audit', perm: 'audit.view' },
+      { key: '/documents', icon: <FileTextOutlined />, label: 'Documents', perm: 'documents.view' },
+      { key: '/audit-logs', icon: <HistoryOutlined />, label: 'Audit Logs', perm: 'auditLogs.view' },
+    ],
+  },
+  {
+    key: 'g-adm', icon: <SettingOutlined />, label: 'Administration',
+    children: [
+      { key: '/trustees', icon: <CrownOutlined />, label: 'Trustees', perm: 'trustees.view' },
+      { key: '/users', icon: <UserOutlined />, label: 'Users & Roles', perm: 'users.manage' },
+      { key: '/settings', icon: <SettingOutlined />, label: 'Settings', perm: 'settings.manage' },
+      { key: '/system', icon: <DashboardOutlined />, label: 'System health', perm: 'system.monitor' },
+      { key: '/billing', icon: <CreditCardOutlined />, label: 'Plan & billing', perm: 'billing' },
+    ],
+  },
 ];
+const FLAT_MENU = MENU.flatMap((m) => (m.children ? m.children.map((c) => ({ ...c, group: m.key })) : [m]));
 
 export default function AppShell({ children }) {
   const { t: tr, lang, setLang } = useLang();
@@ -55,11 +99,13 @@ export default function AppShell({ children }) {
   const screens = Grid.useBreakpoint();
   const [collapsed, setCollapsed] = useState(false);
   const [pwOpen, setPwOpen] = useState(false);
+  const [tfOpen, setTfOpen] = useState(false);
+  const [tfSkip, setTfSkip] = useState(false);
   useIdleLogout();
   const isMobile = !screens.lg;
 
   useEffect(() => {
-    if (!loading && !user && !error && isFirebaseConfigured) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
+    if (!loading && !user && !error) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
   }, [loading, user, error, router, pathname]);
 
   useEffect(() => { setCollapsed(isMobile); }, [isMobile]);
@@ -67,21 +113,30 @@ export default function AppShell({ children }) {
   // a role without Dashboard access lands on its first allowed screen
   useEffect(() => {
     if (!user || pathname !== '/dashboard' || can('dashboard.view')) return;
-    const first = MENU.find((m) => can(m.perm));
+    const first = FLAT_MENU.find((m) => can(m.perm));
     if (first) router.replace(first.key);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, pathname]);
 
+  // "Plan & billing" – Super Admin of a sanstha in the multi-sanstha setup
+  const allowed = (perm) => (perm === 'billing' ? user?.role === 'superAdmin' && user?.license?.mode === 'saas' && user?.license?.billing !== 'fixed' : can(perm));
+  const lockedFeature = useFeatureGate(pathname);
   const items = useMemo(
-    () => MENU.filter((m) => can(m.perm)).map((m) => ({ key: m.key, icon: m.icon, label: <Link href={m.key}>{tr(m.label)}</Link> })),
+    () => MENU.map((m) => {
+      if (!m.children) return allowed(m.perm) ? { key: m.key, icon: m.icon, label: <Link href={m.key}>{tr(m.label)}</Link> } : null;
+      const kids = m.children.filter((c) => allowed(c.perm)).map((c) => ({ key: c.key, icon: c.icon, label: <Link href={c.key}>{tr(c.label)}</Link> }));
+      if (!kids.length) return null;
+      // a folder with one entry → show the entry directly
+      return kids.length === 1 ? kids[0] : { key: m.key, icon: m.icon, label: tr(m.label), children: kids };
+    }).filter(Boolean),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [user?.role, (user?.permissions || []).join(','), lang],
+    [user?.role, (user?.permissions || []).join(','), lang, user?.license?.state, (user?.license?.features || []).join(',')],
   );
-  const selected = MENU.map((m) => m.key).filter((k) => pathname.startsWith(k)).sort((a, b) => b.length - a.length)[0];
+  const selected = FLAT_MENU.map((m) => m.key).filter((k) => pathname.startsWith(k)).sort((a, b) => b.length - a.length)[0];
+  const selectedGroup = FLAT_MENU.find((m) => m.key === selected)?.group;
+  const [openKeys, setOpenKeys] = useState([]);
+  useEffect(() => { if (selectedGroup) setOpenKeys((k) => (k.includes(selectedGroup) ? k : [...k, selectedGroup])); }, [selectedGroup]);
 
-  if (!isFirebaseConfigured) {
-    return <Result status="warning" title={tr('Firebase is not configured')} subTitle={tr('Copy .env.example to .env.local, fill your Firebase web-app keys and restart the dev server.')} />;
-  }
   if (loading || (!user && !error)) {
     return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}><Spin size="large" /></div>;
   }
@@ -113,6 +168,8 @@ export default function AppShell({ children }) {
           theme="dark"
           mode="inline"
           selectedKeys={[selected]}
+          openKeys={collapsed ? undefined : openKeys}
+          onOpenChange={setOpenKeys}
           items={items}
           onClick={() => isMobile && setCollapsed(true)}
         />
@@ -150,6 +207,7 @@ export default function AppShell({ children }) {
               />
             </Space>
           ) : null}
+          <InstallAppButton />
           <NotificationBell />
           <Dropdown
             menu={{
@@ -164,6 +222,7 @@ export default function AppShell({ children }) {
                   ],
                 },
                 { key: 'pw', icon: <KeyOutlined />, label: tr('Change password'), onClick: () => setPwOpen(true) },
+                { key: 'tf', icon: <SafetyCertificateOutlined />, label: `${tr('2-step login')}${user?.twoFactor ? ' ✓' : ''}`, onClick: () => setTfOpen(true) },
                 { type: 'divider' },
                 { key: 'logout', icon: <LogoutOutlined />, label: tr('Sign out'), onClick: logout },
               ],
@@ -177,10 +236,19 @@ export default function AppShell({ children }) {
         </Header>
         <Content style={{ margin: isMobile ? 10 : 20, minWidth: 0 }}>
           <OfflineBanner />
-          {app.ready ? <YearBanners /> : null}
-          {app.ready ? children : <div style={{ padding: 60, textAlign: 'center' }}><Spin /></div>}
+          {user?.license?.locked ? <LockedScreen /> : (
+            <>
+              <LicenseBanner />
+              {app.ready ? <YearBanners /> : null}
+              {lockedFeature ? <FeatureLocked feature={lockedFeature} /> : app.ready ? children : <div style={{ padding: 60, textAlign: 'center' }}><Spin /></div>}
+            </>
+          )}
         </Content>
-        <ChangePasswordModal open={pwOpen} onClose={() => setPwOpen(false)} />
+        <ChangePasswordModal open={pwOpen || !!user?.mustChangePassword} forced={!!user?.mustChangePassword} onClose={() => setPwOpen(false)} />
+        {(() => {
+          const forced = !user?.mustChangePassword && !user?.twoFactor && !tfSkip && (app.settings.security?.require2fa || []).includes(user?.role);
+          return <TwoFactorModal open={tfOpen || forced} forced={forced} onClose={() => { setTfOpen(false); if (forced) setTfSkip(true); }} />;
+        })()}
       </Layout>
     </Layout>
   );

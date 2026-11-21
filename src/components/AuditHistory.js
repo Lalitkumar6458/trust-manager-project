@@ -1,10 +1,11 @@
 'use client';
 
 import { Table, Tag, Typography } from 'antd';
-import { where } from 'firebase/firestore';
+import { where } from '@/lib/q';
 import { COL } from '@/lib/constants';
 import { fmtDateTime } from '@/lib/format';
-import { useLiveQuery } from '@/lib/hooks';
+import { useServerTable } from '@/lib/useServerTable';
+import ServerPager from '@/components/ServerPager';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/i18n/LangContext';
 
@@ -41,16 +42,17 @@ export default function AuditHistory({ docId }) {
   const { t: tr } = useLang();
   const { can } = useAuth();
   const allowed = can('auditLogs.view');
-  const { data, loading } = useLiveQuery(allowed && docId ? COL.auditLogs : null, [where('docId', '==', docId || '-')], [docId, allowed]);
+  // newest first, 100 per page from the server
+  const table = useServerTable(COL.auditLogs, [where('docId', '==', docId || '-')], { order: ['at', 'desc'], key: docId, enabled: !!(allowed && docId) });
   if (!allowed) return <Typography.Text type="secondary">{tr('Audit trail is visible to Admin / Accountant / Auditor.')}</Typography.Text>;
-  const rows = [...data].sort((a, b) => (b.at?.seconds || 0) - (a.at?.seconds || 0));
   return (
     <Table
       size="small"
-      loading={loading}
+      loading={table.loading}
       rowKey="id"
-      dataSource={rows}
-      pagination={{ pageSize: 10, hideOnSinglePage: true }}
+      dataSource={table.rows}
+      pagination={false}
+      footer={table.total > table.pageSize ? () => <ServerPager table={table} /> : undefined}
       expandable={{ expandedRowRender: (r) => <ChangesTable changes={r.changes} />, rowExpandable: (r) => (r.changes || []).length > 0 }}
       columns={[
         { title: tr('When'), dataIndex: 'at', render: fmtDateTime, width: 170 },

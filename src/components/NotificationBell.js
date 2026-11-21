@@ -4,8 +4,8 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { Badge, Button, Popover, List, Typography, Empty } from 'antd';
 import { BellOutlined } from '@ant-design/icons';
-import { where, orderBy, limit, arrayUnion, updateDoc, doc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { where, orderBy, limit } from '@/lib/q';
+import { rpc } from '@/lib/api';
 import { COL } from '@/lib/constants';
 import { CUSTOM_ROLE } from '@/lib/permissions';
 import { NOTIFY_PERM } from '@/services/db';
@@ -28,7 +28,7 @@ export default function NotificationBell() {
   );
   const unread = useMemo(() => data.filter((n) => !(n.readBy || []).includes(user?.uid)), [data, user]);
 
-  const markRead = (ids) => Promise.all(ids.map((id) => updateDoc(doc(db, COL.notifications, id), { readBy: arrayUnion(user.uid) }))).catch(() => {});
+  const markRead = (ids) => (ids.length ? rpc('notifications.read', ids).catch(() => {}) : Promise.resolve());
 
   const content = (
     <div style={{ width: 'min(340px, 86vw)', maxHeight: 420, overflow: 'auto' }}>

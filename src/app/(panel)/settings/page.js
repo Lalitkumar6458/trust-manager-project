@@ -16,7 +16,12 @@ import { saveSettings, saveMaster } from '@/services/masters';
 import { uploadSettingsImage } from '@/services/documents';
 import { donationReceiptPdf, paymentVoucherPdf } from '@/pdf/generate';
 import { BackupCard } from '@/components/DataTools';
+import ReceiptDesigner from '@/components/ReceiptDesigner';
+import MessagingSettings from '@/components/MessagingSettings';
+import OnlineSettings from '@/components/OnlineSettings';
+import SecuritySettings from '@/components/SecuritySettings';
 import { useLang } from '@/i18n/LangContext';
+import { hasFeature } from '@/lib/features';
 
 /** Upload saves the setting immediately (no need to press "Save settings") */
 function ImageField({ value, onChange, keyName, field, label }) {
@@ -94,6 +99,7 @@ function TrustProfile() {
               <Col span={12}><Form.Item name="registrationDate" label={tr('Registration date')}><Input /></Form.Item></Col>
               <Col span={12}><Form.Item name="section12A" label={tr('12A / 12AB registration no.')}><Input /></Form.Item></Col>
               <Col span={12}><Form.Item name="section80G" label={tr('80G registration no.')}><Input /></Form.Item></Col>
+              <Col span={12}><Form.Item name="section80GDate" label={tr('80G approval date')} extra={tr('Needed for Form 10BD / 10BE')}><Input type="date" /></Form.Item></Col>
             </Row>
             <Form.Item name="taxDetails" label={tr('Other tax / registration details (CSR, FCRA…)')}><Input.TextArea rows={2} /></Form.Item>
           </Card>
@@ -121,6 +127,7 @@ function TrustProfile() {
             <Form.Item name="receiptBeforeApproval" label={tr('Receipt print before approval')}>
               <Select options={[{ value: 'provisional', label: tr('Allowed with “PROVISIONAL” watermark') }, { value: 'allow', label: tr('Allowed without watermark') }]} />
             </Form.Item>
+            <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>{tr('Colours, paper size, language, QR code and every printed word: see the “Receipt design” tab.')}</Typography.Text>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>{tr('Receipt numbers:')}{' '}{app.settings.receiptPrefix}/{app.selectedFyId || fyIdOf(todayStr())}/00001 – {tr('restart every financial year, issued atomically (no duplicates).')}</Typography.Text>
           </Card>
           <Card size="small" title={tr('Logo & images (receipt, voucher, reports)')} style={{ marginBottom: 12 }}>
@@ -215,6 +222,8 @@ function CategoryTab({ kind }) {
 
 export default function SettingsPage() {
   const { t: tr } = useLang();
+  const { user } = useAuth();
+  const lic = user?.license;
   return (
     <Guard perm="settings.manage">
       <PageHeader title={tr('Settings')} subtitle={tr('Trust master settings, receipt format and categories')} extra={[<Link key="b" href="/bank-accounts"><Button>{tr('Bank accounts')}</Button></Link>, <Link key="f" href="/funds"><Button>{tr('Funds / projects')}</Button></Link>, <Link key="y" href="/financial-years"><Button>{tr('Financial years')}</Button></Link>]} />
@@ -222,10 +231,15 @@ export default function SettingsPage() {
         <Tabs
           items={[
             { key: 't', label: tr('Trust profile & receipt'), children: <TrustProfile /> },
+            { key: 'r', label: tr('Receipt design'), children: <ReceiptDesigner /> },
+            // messages tab also holds the OTP setup of the donor portal
+            hasFeature(lic, 'messaging') || hasFeature(lic, 'portal') ? { key: 'm', label: tr('Messages (Email / WhatsApp)'), children: <MessagingSettings /> } : null,
+            hasFeature(lic, 'online') ? { key: 'o', label: tr('Online donation'), children: <OnlineSettings /> } : null,
+            { key: 's', label: tr('Security'), children: <SecuritySettings /> },
             { key: 'd', label: tr('Donation categories'), children: <CategoryTab kind="donation" /> },
             { key: 'e', label: tr('Expense categories'), children: <CategoryTab kind="expense" /> },
             { key: 'b', label: tr('Backup'), children: <BackupCard /> },
-          ]}
+          ].filter(Boolean)}
         />
       </Card>
     </Guard>

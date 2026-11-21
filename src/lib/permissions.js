@@ -1,4 +1,5 @@
 import { ROLES } from './constants';
+import { permAllowed } from './features';
 
 const { superAdmin, accountant, operator, auditor } = ROLES;
 
@@ -57,6 +58,28 @@ export const PERMISSIONS = {
   'users.manage': [superAdmin],
   'trustees.manage': [superAdmin],
   'lockedPeriod.override': [superAdmin],
+
+  // daily ops & communication
+  'cash.count': [superAdmin, accountant, operator],
+  'messages.send': [superAdmin, accountant, operator],
+  'pledges.view': [superAdmin, accountant, operator, auditor],
+  'pledges.manage': [superAdmin, accountant, operator],
+  'budget.view': [superAdmin, accountant, auditor],
+  'budget.manage': [superAdmin, accountant],
+  'online.view': [superAdmin, accountant, auditor],
+
+  // modules
+  'bookings.view': [superAdmin, accountant, operator, auditor],
+  'bookings.manage': [superAdmin, accountant, operator],
+  'seva.view': [superAdmin, accountant, operator, auditor],
+  'seva.manage': [superAdmin, accountant, operator],
+  'inventory.view': [superAdmin, accountant, operator, auditor],
+  'inventory.manage': [superAdmin, accountant, operator],
+  'assets.view': [superAdmin, accountant, auditor],
+  'assets.manage': [superAdmin, accountant],
+  'payroll.view': [superAdmin, accountant, auditor],
+  'payroll.manage': [superAdmin, accountant],
+  'system.monitor': [superAdmin],
 };
 
 export function can(role, permission) {
@@ -75,7 +98,7 @@ export function can(role, permission) {
 export const CUSTOM_ROLE = 'custom';
 
 /** Actions that stay with the Super Admin – never grantable to a custom role */
-export const SUPER_ONLY = ['users.manage', 'lockedPeriod.override', 'closing.reopen', 'fy.manage', 'audit.finalize', 'accounts.manage'];
+export const SUPER_ONLY = ['system.monitor', 'users.manage', 'lockedPeriod.override', 'closing.reopen', 'fy.manage', 'audit.finalize', 'accounts.manage'];
 
 /** Screen-wise catalogue used by the role editor: screen access + actions on that screen */
 export const PERMISSION_GROUPS = [
@@ -124,6 +147,16 @@ export const PERMISSION_GROUPS = [
   },
   { key: 'trustees', label: 'Trustees', view: 'trustees.view', actions: [{ perm: 'trustees.manage', label: 'Add / edit trustees' }] },
   { key: 'auditLogs', label: 'Audit Logs', view: 'auditLogs.view', actions: [] },
+  { key: 'cash', label: 'Cash count', view: 'cash.count', actions: [] },
+  { key: 'messages', label: 'Messages (email / WhatsApp)', view: 'messages.send', actions: [] },
+  { key: 'pledges', label: 'Sankalp / pledges', view: 'pledges.view', actions: [{ perm: 'pledges.manage', label: 'Add / edit pledges' }] },
+  { key: 'budget', label: 'Budget', view: 'budget.view', actions: [{ perm: 'budget.manage', label: 'Set budget' }] },
+  { key: 'online', label: 'Online donations', view: 'online.view', actions: [] },
+  { key: 'bookings', label: 'Hall / room booking', view: 'bookings.view', actions: [{ perm: 'bookings.manage', label: 'Add / edit bookings' }] },
+  { key: 'seva', label: 'Seva / pooja booking', view: 'seva.view', actions: [{ perm: 'seva.manage', label: 'Add / edit seva bookings' }] },
+  { key: 'inventory', label: 'Store / inventory', view: 'inventory.view', actions: [{ perm: 'inventory.manage', label: 'Stock in / out' }] },
+  { key: 'assets', label: 'Asset register', view: 'assets.view', actions: [{ perm: 'assets.manage', label: 'Add / edit assets' }] },
+  { key: 'payroll', label: 'Staff & salary', view: 'payroll.view', actions: [{ perm: 'payroll.manage', label: 'Add staff, make salary' }] },
   { key: 'settings', label: 'Settings', view: 'settings.manage', actions: [] },
   { key: 'users', label: 'Users & Roles', view: 'users.manage', actions: [] },
 ];
@@ -156,6 +189,7 @@ export const builtInPerms = (role) => Object.keys(PERMISSIONS).filter((p) => PER
 /** Permission check for a user profile (built-in or custom role) */
 export function userCan(user, permission) {
   if (!user || user.active === false) return false;
+  if (user.license && !permAllowed(user.license, permission)) return false; // plan features / expired plan
   if (user.role === CUSTOM_ROLE) return !SUPER_ONLY.includes(permission) && (user.permissions || []).includes(permission);
   return can(user.role, permission);
 }

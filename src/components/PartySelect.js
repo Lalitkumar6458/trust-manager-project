@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Select, Spin } from 'antd';
-import { where, limit, orderBy } from 'firebase/firestore';
+import { where, limit, orderBy } from '@/lib/q';
 import { COL } from '@/lib/constants';
 import { normalizeSearch } from '@/lib/keywords';
 import { fetchAll, fetchOne } from '@/services/db';
@@ -12,7 +12,7 @@ import { useLang } from '@/i18n/LangContext';
  * Searchable select for donors / beneficiaries (server side search by keywords).
  * value = document id; onChange(id, record)
  */
-export default function PartySelect({ kind = 'donor', value, onChange, placeholder, typeFilter, style, allowClear = true, id }) {
+export default function PartySelect({ kind = 'donor', value, onChange, placeholder, typeFilter, style, allowClear = true, id, disabled }) {
   const { t: tr } = useLang();
   const coll = kind === 'donor' ? COL.donors : COL.beneficiaries;
   const [options, setOptions] = useState([]);
@@ -57,6 +57,7 @@ export default function PartySelect({ kind = 'donor', value, onChange, placehold
 
   return (
     <Select
+      disabled={disabled}
       id={id}
       showSearch={{ filterOption: false, onSearch: (t) => { clearTimeout(timer.current); timer.current = setTimeout(() => load(t), 300); } }}
       value={value}

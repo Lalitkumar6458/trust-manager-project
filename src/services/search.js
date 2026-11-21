@@ -1,20 +1,17 @@
 'use client';
 
-import { COL } from '@/lib/constants';
-import { normalizeSearch } from '@/lib/keywords';
-import { fetchAll, where, limit } from './db';
+// Browser side: every change is sent to the server (src/server/rpc.js), which checks
+// the permission and runs the business logic inside a PostgreSQL transaction.
+import { rpc, rpcRead } from '@/lib/api';
 
 /**
  * Global search across donations, expenses, donors, beneficiaries & ledger.
  * Matches on searchKeywords (name prefixes, receipt/voucher no, UTR, mobile, PAN …)
  */
-export async function globalSearch(text, { canLedger = false } = {}) {
-  const term = normalizeSearch(text);
-  if (term.length < 2) return [];
-  const q = (coll) => fetchAll(coll, where('searchKeywords', 'array-contains', term), limit(15)).catch(() => []);
-  const [dons, exps, donors, payees, txns] = await Promise.all([
-    q(COL.donations), q(COL.expenses), q(COL.donors), q(COL.beneficiaries), canLedger ? q(COL.transactions) : [],
-  ]);
+export async function globalSearch(text) {
+  const r = await rpcRead('search.global', text);
+  if (!r || Array.isArray(r)) return [];
+  const { dons = [], exps = [], donors = [], payees = [], txns = [] } = r;
   return [
     ...dons.map((d) => ({ kind: 'Donation', id: d.id, title: `${d.receiptNo || 'Draft'} – ${d.donor?.name}`, sub: `${d.date} · ₹${d.amount} · ${d.status}`, href: `/donations/${d.id}` })),
     ...exps.map((e) => ({ kind: 'Expense', id: e.id, title: `${e.voucherNo || 'Draft'} – ${e.payee?.name}`, sub: `${e.date} · ₹${e.amount} · ${e.categoryName} · ${e.status}`, href: `/expenses/${e.id}` })),

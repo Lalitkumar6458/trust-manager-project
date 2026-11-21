@@ -2,16 +2,12 @@
 
 import { COL, DONOR_TYPES } from '@/lib/constants';
 import { openBlob } from '@/pdf/generate';
-import { buildKeywords } from '@/lib/keywords';
 import { todayStr } from '@/lib/format';
-import {
-  fetchAll, db, runTransaction, colRef, doc, readCounter, createdStamp, writeAudit, writeBatch,
-} from './db';
+import { fetchAll, rpc } from '@/lib/api';
 
-/** Firestore value → plain cell (timestamps as ISO date-time, objects as JSON) */
+/** Stored value → plain cell (timestamps as ISO date-time, objects as JSON) */
 function cell(v) {
   if (v === null || v === undefined) return '';
-  if (typeof v?.toDate === 'function') return v.toDate().toISOString();
   if (typeof v === 'object') return JSON.stringify(v);
   return v;
 }
@@ -52,11 +48,6 @@ export async function exportAllData(user, onProgress) {
   summary.forEach((s) => info.addRow(s));
   const buf = await wb.xlsx.writeBuffer();
   openBlob(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `trust-backup-${todayStr()}.xlsx`, true);
-  try {
-    const b = writeBatch(db);
-    writeAudit(b, user, { collection: 'backup', docId: todayStr(), ref: 'Full backup', action: 'export', summary: `Full data backup (${summary.length} collections)` });
-    await b.commit();
-  } catch { /* audit is best-effort */ }
   onProgress?.(100, '');
   return summary;
 }
@@ -104,58 +95,17 @@ export function parseDonorRows(rows) {
   return { donors, errors };
 }
 
-/**
- * Creates donors in chunks (Super Admin only). Donor codes are reserved in one transaction per chunk
- * (counter "donor"), so numbering stays gap-free and unique.
- * Existing donors with the same mobile or PAN are skipped.
- */
-export async function importDonors(donors, user, onProgress) {
-  const existing = await fetchAll(COL.donors);
-  const seenMobile = new Set(existing.map((d) => d.mobile).filter(Boolean));
-  const seenPan = new Set(existing.map((d) => d.pan).filter(Boolean));
-  const fresh = [];
-  let skipped = 0;
-  donors.forEach((d) => {
-    if ((d.mobile && seenMobile.has(d.mobile)) || (d.pan && seenPan.has(d.pan))) { skipped += 1; return; }
-    if (d.mobile) seenMobile.add(d.mobile);
-    if (d.pan) seenPan.add(d.pan);
-    fresh.push(d);
-  });
-  const CHUNK = 100;
+/** Creates donors on the server (Super Admin only); existing mobile / PAN are skipped */
+export async function importDonors(donors, _user, onProgress) {
+  const CHUNK = 500;
   let created = 0;
-  for (let i = 0; i < fresh.length; i += CHUNK) {
-    const part = fresh.slice(i, i + CHUNK);
+  let skipped = 0;
+  for (let i = 0; i < donors.length; i += CHUNK) {
     // eslint-disable-next-line no-await-in-loop
-    await runTransaction(db, async (tx) => {
-      const counter = await readCounter(tx, 'donor');
-      let next = counter.next;
-      part.forEach((d) => {
-        const code = `D-${String(next).padStart(5, '0')}`;
-        next += 1;
-        tx.set(doc(colRef(COL.donors)), {
-          ...d,
-          donorCode: code,
-          code,
-          idType: '',
-          idNumber: '',
-          nameLower: d.name.toLowerCase(),
-          totalAmount: 0,
-          donationCount: 0,
-          fyTotals: {},
-          firstDonationDate: null,
-          lastDonationDate: null,
-          status: 'active',
-          searchKeywords: buildKeywords({ names: [d.name, d.organizationName], exact: [d.mobile, d.pan, code, d.email] }),
-          ...createdStamp(user),
-        });
-      });
-      // bulk reservation of donor codes – allowed for the Super Admin only (security rules)
-      tx.set(counter.ref, { next }, { merge: true });
-      writeAudit(tx, user, { collection: COL.donors, docId: 'import', ref: `Import ${part.length}`, action: 'import', summary: `${part.length} donors imported (${part[0].name} …)` });
-    });
-    created += part.length;
-    onProgress?.(Math.round((created / fresh.length) * 100));
+    const r = await rpc('donors.import', donors.slice(i, i + CHUNK));
+    created += r.created;
+    skipped += r.skipped;
+    onProgress?.(Math.round(((i + CHUNK > donors.length ? donors.length : i + CHUNK) / donors.length) * 100));
   }
   return { created, skipped };
 }
-

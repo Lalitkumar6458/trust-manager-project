@@ -6,10 +6,12 @@ import {
   Button, Card, Table, Modal, Form, Input, Select, InputNumber, Drawer, Tabs, Progress, Row, Col, Statistic, Space, Tag,
 } from 'antd';
 import { PlusOutlined, EditOutlined } from '@ant-design/icons';
-import { where } from 'firebase/firestore';
+import { where } from '@/lib/q';
 import { COL, FUND_TYPES } from '@/lib/constants';
 import { fmtDate, sum, round2 } from '@/lib/format';
 import { useLiveQuery, useAction } from '@/lib/hooks';
+import { useServerTable } from '@/lib/useServerTable';
+import ServerPager, { ServerError } from '@/components/ServerPager';
 import { useAuth } from '@/contexts/AuthContext';
 import { useAppData } from '@/contexts/AppDataContext';
 import { PageHeader, Money, Guard, StatusTag } from '@/components/common';
@@ -44,17 +46,18 @@ function FundModal({ fund, open, onClose }) {
 
 function FundDrawer({ fund, onClose }) {
   const { t: tr } = useLang();
-  const { data: dons } = useLiveQuery(fund ? COL.donations : null, [where('fundIds', 'array-contains', fund?.id || '-')], [fund?.id]);
-  const { data: exps } = useLiveQuery(fund ? COL.expenses : null, [where('fundId', '==', fund?.id || '-')], [fund?.id]);
-  const dRows = dons.filter((d) => d.status === 'approved').map((d) => ({ ...d, fundAmount: sum(d.lines.filter((l) => l.fundId === fund?.id), (l) => l.amount) })).sort((a, b) => b.date.localeCompare(a.date));
-  const eRows = exps.filter((e) => e.status === 'paid').sort((a, b) => b.date.localeCompare(a.date));
+  // 100 per page from the server (newest first)
+  const dt = useServerTable(COL.donations, [where('fundIds', 'array-contains', fund?.id || '-'), where('status', '==', 'approved')], { key: fund?.id, enabled: !!fund });
+  const et = useServerTable(COL.expenses, [where('fundId', '==', fund?.id || '-'), where('status', '==', 'paid')], { key: fund?.id, enabled: !!fund });
+  const dRows = dt.rows.map((d) => ({ ...d, fundAmount: sum((d.lines || []).filter((l) => l.fundId === fund?.id), (l) => l.amount) }));
+  const eRows = et.rows;
   return (
     <Drawer open={!!fund} onClose={onClose} size={760} title={fund?.name}>
       <Tabs
         items={[
           {
-            key: 'r', label: tr('Received ({v0})', { v0: dRows.length }),
-            children: <Table size="small" rowKey="id" dataSource={dRows} pagination={{ pageSize: 20 }} columns={[
+            key: 'r', label: tr('Received ({v0})', { v0: dt.total ?? '…' }),
+            children: <Table size="small" rowKey="id" loading={dt.loading} dataSource={dRows} pagination={false} title={dt.error ? () => <ServerError table={dt} /> : undefined} footer={() => <ServerPager table={dt} />} columns={[
               { title: tr('Date'), dataIndex: 'date', render: fmtDate },
               { title: tr('Receipt'), dataIndex: 'receiptNo', render: (v, r) => <Link href={`/donations/${r.id}`}>{v}</Link> },
               { title: tr('Donor'), render: (_, r) => r.donor?.name },
@@ -62,8 +65,8 @@ function FundDrawer({ fund, onClose }) {
             ]} />,
           },
           {
-            key: 's', label: tr('Spent ({v0})', { v0: eRows.length }),
-            children: <Table size="small" rowKey="id" dataSource={eRows} pagination={{ pageSize: 20 }} columns={[
+            key: 's', label: tr('Spent ({v0})', { v0: et.total ?? '…' }),
+            children: <Table size="small" rowKey="id" loading={et.loading} dataSource={eRows} pagination={false} title={et.error ? () => <ServerError table={et} /> : undefined} footer={() => <ServerPager table={et} />} columns={[
               { title: tr('Date'), dataIndex: 'date', render: fmtDate },
               { title: tr('Voucher'), dataIndex: 'voucherNo', render: (v, r) => <Link href={`/expenses/${r.id}`}>{v}</Link> },
               { title: tr('Paid to'), render: (_, r) => r.payee?.name },

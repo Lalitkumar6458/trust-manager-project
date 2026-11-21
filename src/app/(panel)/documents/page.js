@@ -1,13 +1,16 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { Button, Card, Table, Select, Input, Space, Tag, Switch } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
-import { where } from 'firebase/firestore';
+import { where } from '@/lib/q';
 import { COL, DOC_TYPES } from '@/lib/constants';
 import { fmtDateTime } from '@/lib/format';
-import { useLiveQuery, useAction } from '@/lib/hooks';
+import { useAction } from '@/lib/hooks';
+import { normalizeSearch } from '@/lib/keywords';
+import { useServerTable, useDebounced } from '@/lib/useServerTable';
+import ServerPager, { ServerError } from '@/components/ServerPager';
 import { useAuth } from '@/contexts/AuthContext';
 import { useAppData } from '@/contexts/AppDataContext';
 import { PageHeader, Guard, useReasonPrompt } from '@/components/common';
@@ -29,19 +32,21 @@ export default function DocumentsPage() {
   const [open, setOpen] = useState(false);
   const [run] = useAction();
   const [ask, reasonModal] = useReasonPrompt();
-  const { data, loading } = useLiveQuery(COL.documents, [where('financialYearId', '==', app.selectedFyId || '-')], [app.selectedFyId]);
-
-  const rows = useMemo(() => data
-    .filter((d) => showArchived || d.status !== 'archived')
-    .filter((d) => !type || d.docType === type)
-    .filter((d) => !text || [d.name, d.linkedRef, d.notes].filter(Boolean).some((x) => x.toLowerCase().includes(text.toLowerCase())))
-    .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)), [data, type, text, showArchived]);
+  // every filter runs in PostgreSQL (newest first, 100 per page)
+  const term = normalizeSearch(useDebounced(text));
+  const cons = [where('financialYearId', '==', app.selectedFyId || '-')];
+  if (!showArchived) cons.push(where('status', '==', 'active'));
+  if (type) cons.push(where('docType', '==', type));
+  if (term.length >= 2) cons.push(where('searchKeywords', 'array-contains', term));
+  const key = JSON.stringify([app.selectedFyId, showArchived, type, term.length >= 2 ? term : '']);
+  const table = useServerTable(COL.documents, cons, { order: ['createdAt', 'desc'], key });
+  const { rows, loading } = table;
 
   return (
     <Guard perm="documents.view">
       <PageHeader
         title={tr('Documents')}
-        subtitle={tr('Supporting documents for FY {v0} – stored securely in Firebase Storage', { v0: app.selectedFyId })}
+        subtitle={tr('Supporting documents for FY {v0} – stored securely on the trust server', { v0: app.selectedFyId })}
         extra={can('documents.upload') ? [<Button key="u" type="primary" icon={<UploadOutlined />} onClick={() => setOpen(true)}>{tr('Upload')}</Button>] : []}
       />
       <Card>
@@ -50,11 +55,14 @@ export default function DocumentsPage() {
           <Select allowClear placeholder={tr('Document type')} value={type} onChange={setType} style={{ width: 200 }} options={DOC_TYPES.map((d) => ({ value: d, label: tr(d) }))} />
           <span>{tr('Show archived')} <Switch size="small" checked={showArchived} onChange={setShowArchived} /></span>
         </Space>
+        <ServerError table={table} />
         <Table
           rowKey="id"
           loading={loading}
           dataSource={rows}
           scroll={{ x: 800 }}
+          pagination={false}
+          footer={() => <ServerPager table={table} />}
           columns={[
             { title: tr('File'), dataIndex: 'name', render: (v, d) => <a href={d.url} target="_blank" rel="noreferrer">{v}</a> },
             { title: tr('Type'), dataIndex: 'docType', render: (t) => <Tag>{tr(t || 'Other')}</Tag>, width: 170 },

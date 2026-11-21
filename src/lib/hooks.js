@@ -1,40 +1,48 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { collection, doc, onSnapshot, query } from 'firebase/firestore';
 import { App } from 'antd';
-import { db } from '@/lib/firebase';
 import { useLang } from '@/i18n/LangContext';
+import { query, onDataChanged } from '@/lib/api';
 
 /**
- * Live Firestore query.
+ * Query that stays fresh: loaded from the server, re-loaded after every change made in
+ * this browser and every 30 s while the tab is visible (changes by other users).
  * @param {string|null} coll collection name (null → skip)
- * @param {Array} constraints query constraints
- * @param {Array} deps dependency list that should re-run the query
+ * @param {Array} constraints where / orderBy / limit (src/lib/q.js)
+ * @param {Array} deps re-run when these change
  */
 export function useLiveQuery(coll, constraints = [], deps = []) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const consRef = useRef(constraints);
+  consRef.current = constraints;
   useEffect(() => {
     if (!coll) {
       setData([]);
       setLoading(false);
       return undefined;
     }
-    setLoading(true);
-    const q = constraints.length ? query(collection(db, coll), ...constraints) : collection(db, coll);
-    const unsub = onSnapshot(q, (snap) => {
-      setData(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      setLoading(false);
-      setError(null);
-    }, (e) => {
-      // eslint-disable-next-line no-console
-      console.error(coll, e);
-      setError(e);
-      setLoading(false);
-    });
-    return unsub;
+    let alive = true;
+    let seq = 0;
+    const load = async (first) => {
+      const my = ++seq; // eslint-disable-line no-plusplus
+      if (first) setLoading(true);
+      try {
+        const r = await query({ coll, cons: consRef.current, mode: 'list' });
+        if (alive && my === seq) { setData(r.rows); setError(null); }
+      } catch (e) {
+        // 403 = this role may not see it (the page shows “no access”) – not an error worth logging
+        if (e?.status !== 403) console.error(coll, e); // eslint-disable-line no-console
+        if (alive && my === seq) setError(e);
+      } finally {
+        if (alive && my === seq) setLoading(false);
+      }
+    };
+    load(true);
+    const off = onDataChanged(() => load(false));
+    return () => { alive = false; off(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coll, ...deps]);
   return { data, loading, error };
@@ -45,11 +53,21 @@ export function useLiveDoc(coll, id) {
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     if (!coll || !id) return undefined;
-    setLoading(true);
-    return onSnapshot(doc(db, coll, id), (s) => {
-      setData(s.exists() ? { id: s.id, ...s.data() } : null);
-      setLoading(false);
-    }, () => setLoading(false));
+    let alive = true;
+    const load = async (first) => {
+      if (first) setLoading(true);
+      try {
+        const r = await query({ coll, id });
+        if (alive) setData(r.doc);
+      } catch {
+        if (alive && first) setData(null);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    };
+    load(true);
+    const off = onDataChanged(() => load(false));
+    return () => { alive = false; off(); };
   }, [coll, id]);
   return { data, loading };
 }

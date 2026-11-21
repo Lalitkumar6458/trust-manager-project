@@ -1,8 +1,8 @@
 'use client';
 
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { collection, doc, onSnapshot, query, orderBy } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { query, onDataChanged } from '@/lib/api';
+import { orderBy } from '@/lib/q';
 import { COL, DEFAULT_TRUST_SETTINGS } from '@/lib/constants';
 import { fyIdOf, todayStr } from '@/lib/format';
 import { useAuth } from './AuthContext';
@@ -18,7 +18,7 @@ const writeLS = (k, v) => {
 };
 
 /**
- * Small master collections are kept live in memory for the whole session:
+ * Small master collections are kept in memory for the whole session (refreshed after changes):
  * settings, categories, accounts, funds, financial years, monthly closings.
  */
 export function AppDataProvider({ children }) {
@@ -36,27 +36,34 @@ export function AppDataProvider({ children }) {
 
   useEffect(() => {
     if (!user) return undefined;
-    const subs = [];
-    const list = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    const loaded = new Set();
-    const mark = (k) => {
-      loaded.add(k);
-      if (loaded.size >= 6) setReady(true);
+    let alive = true;
+    const list = (coll, cons = []) => query({ coll, cons, mode: 'list' }).then((r) => r.rows).catch(() => null);
+    const load = async () => {
+      const [st, dc, ec, acc, fd, fy, mc, rl] = await Promise.all([
+        query({ coll: COL.settings, id: 'trust' }).then((r) => r.doc).catch(() => undefined),
+        list(COL.donationCategories, [orderBy('order')]),
+        list(COL.expenseCategories, [orderBy('order')]),
+        list(COL.accounts),
+        list(COL.funds),
+        list(COL.financialYears),
+        list(COL.monthlyClosings),
+        list(COL.roles),
+      ]);
+      if (!alive) return;
+      if (st !== undefined) setSettings({ ...DEFAULT_TRUST_SETTINGS, ...(st || {}) });
+      if (dc) setDonationCategories(dc);
+      if (ec) setExpenseCategories(ec);
+      if (acc) setAccounts(acc.sort((a, b) => (a.type === b.type ? (a.name || '').localeCompare(b.name || '') : a.type === 'bank' ? -1 : 1)));
+      if (fd) setFunds(fd.sort((a, b) => (a.name || '').localeCompare(b.name || '')));
+      if (fy) setFys(fy.sort((a, b) => b.id.localeCompare(a.id)));
+      if (mc) { const m = {}; mc.forEach((d) => { m[d.id] = d; }); setClosings(m); }
+      if (rl) setRoles(rl.sort((a, b) => (a.name || '').localeCompare(b.name || '')));
+      setReady(true);
     };
-    subs.push(onSnapshot(doc(db, COL.settings, 'trust'), (s) => { setSettings({ ...DEFAULT_TRUST_SETTINGS, ...(s.data() || {}) }); mark('s'); }, () => mark('s')));
-    subs.push(onSnapshot(query(collection(db, COL.donationCategories), orderBy('order')), (s) => { setDonationCategories(list(s)); mark('dc'); }, () => mark('dc')));
-    subs.push(onSnapshot(query(collection(db, COL.expenseCategories), orderBy('order')), (s) => { setExpenseCategories(list(s)); mark('ec'); }, () => mark('ec')));
-    subs.push(onSnapshot(collection(db, COL.accounts), (s) => { setAccounts(list(s).sort((a, b) => (a.type === b.type ? (a.name || '').localeCompare(b.name || '') : a.type === 'bank' ? -1 : 1))); mark('a'); }, () => mark('a')));
-    subs.push(onSnapshot(collection(db, COL.funds), (s) => { setFunds(list(s).sort((a, b) => (a.name || '').localeCompare(b.name || ''))); }, () => {}));
-    subs.push(onSnapshot(collection(db, COL.financialYears), (s) => { setFys(list(s).sort((a, b) => b.id.localeCompare(a.id))); mark('fy'); }, () => mark('fy')));
-    subs.push(onSnapshot(collection(db, COL.monthlyClosings), (s) => {
-      const m = {};
-      s.docs.forEach((d) => { m[d.id] = { id: d.id, ...d.data() }; });
-      setClosings(m);
-      mark('mc');
-    }, () => mark('mc')));
-    subs.push(onSnapshot(collection(db, COL.roles), (s) => { setRoles(list(s).sort((a, b) => (a.name || '').localeCompare(b.name || ''))); }, () => {}));
-    return () => subs.forEach((u) => u());
+    load();
+    // master data refreshes after every change and every minute
+    const off = onDataChanged(load, { pollMs: 60_000 });
+    return () => { alive = false; off(); };
   }, [user]);
 
   // choose FY: saved selection → current flag → FY of today

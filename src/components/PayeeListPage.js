@@ -1,18 +1,20 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button, Card, Table, Input, Space, Tag } from 'antd';
+import { where } from '@/lib/q';
 import { PlusOutlined } from '@ant-design/icons';
 import { COL, PAYEE_TYPES } from '@/lib/constants';
 import { fmtDate, maskAccount, sum } from '@/lib/format';
-import { useLiveQuery } from '@/lib/hooks';
 import { useAuth } from '@/contexts/AuthContext';
 import { PageHeader, Money, Guard } from '@/components/common';
 import ExportButtons from '@/components/ExportButtons';
 import { PayeeModal } from '@/components/PartyForms';
-import { usePagedParties } from '@/lib/usePagedParties';
+import { useServerTable, useDebounced, useAsyncValue } from '@/lib/useServerTable';
+import { normalizeSearch } from '@/lib/keywords';
+import ServerPager, { ServerError } from '@/components/ServerPager';
 import { useLang } from '@/i18n/LangContext';
 
 const typeLabel = (t) => PAYEE_TYPES.find((p) => p.value === t)?.label || t;
@@ -22,17 +24,17 @@ export default function PayeeListPage({ types, title, defaultType }) {
   const router = useRouter();
   const { can } = useAuth();
   const [text, setText] = useState('');
-  const { data, loading, hasMore, loadMore, searching, count, total, fetchAllMatching } = usePagedParties(COL.beneficiaries, { text, inField: 'type', inValues: types });
   const [open, setOpen] = useState(false);
-
-  const shape = (list) => {
-    const t = text.trim().toLowerCase();
-    return list
-      .filter((d) => types.includes(d.type || 'beneficiary'))
-      .filter((d) => !t || [d.name, d.mobile, d.pan, d.gstin, d.code].filter(Boolean).some((x) => String(x).toLowerCase().includes(t)))
-      .sort((a, b) => (b.totalAmount || 0) - (a.totalAmount || 0));
-  };
-  const rows = useMemo(() => shape(data), [data, text, types]); // eslint-disable-line react-hooks/exhaustive-deps
+  // everything runs in PostgreSQL: 100 per page (biggest first); search on the server over all records
+  const term = normalizeSearch(useDebounced(text));
+  const searching = term.length >= 2;
+  const cons = [where('type', 'in', types)];
+  if (searching) cons.push(where('searchKeywords', 'array-contains', term));
+  const key = JSON.stringify([types, searching ? term : '']);
+  const table = useServerTable(COL.beneficiaries, cons, { order: ['totalAmount', 'desc'], key });
+  const { rows, loading } = table;
+  const count = table.total;
+  const total = useAsyncValue(async () => (await table.sumOf(['totalAmount'])).totalAmount || 0, [key, table.rows], null);
 
   const cols = [
     { title: tr('ID'), key: 'code' },
@@ -54,7 +56,7 @@ export default function PayeeListPage({ types, title, defaultType }) {
         title={title}
         subtitle={tr('{v0} record(s) · total paid ₹{v1}', { v0: count ?? rows.length, v1: Number(total ?? sum(rows, (r) => r.totalAmount)).toLocaleString('en-IN') })}
         extra={[
-          <ExportButtons key="x" title={tr('{v0} Register', { v0: title })} columns={cols} rows={rows} getRows={async () => shape(await fetchAllMatching())} totalsFor={(rs) => ({ name: tr('Total'), totalAmount: sum(rs, (r) => r.totalAmount) })} count={count} />,
+          <ExportButtons key="x" title={tr('{v0} Register', { v0: title })} columns={cols} rows={rows} getRows={table.fetchAll} totalsFor={(rs) => ({ name: tr('Total'), totalAmount: sum(rs, (r) => r.totalAmount) })} count={count} />,
           can('beneficiaries.edit') ? <Button key="n" type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>{tr('Add')}</Button> : null,
         ]}
       />
@@ -62,18 +64,14 @@ export default function PayeeListPage({ types, title, defaultType }) {
         <Space style={{ marginBottom: 12 }}>
           <Input.Search allowClear placeholder={tr('Name, mobile, PAN, GSTIN')} value={text} onChange={(e) => setText(e.target.value)} style={{ width: 280 }} />
         </Space>
+        <ServerError table={table} />
         <Table
           rowKey="id"
           loading={loading}
           dataSource={rows}
           scroll={{ x: 800 }}
-          pagination={{ defaultPageSize: 25 }}
-          footer={() => (
-            <Space wrap>
-              <span className="muted">{searching ? tr('Search results from all records') : tr('Showing {v0} of {v1} (largest first)', { v0: rows.length, v1: count ?? '…' })}</span>
-              {hasMore ? <Button size="small" onClick={loadMore}>{tr('Load more')}</Button> : null}
-            </Space>
-          )}
+          pagination={false}
+          footer={() => <ServerPager table={table} />}
           onRow={(r) => ({ onDoubleClick: () => router.push(`/beneficiaries/${r.id}`) })}
           columns={[
             { title: tr('ID'), dataIndex: 'code', width: 95 },
@@ -83,7 +81,7 @@ export default function PayeeListPage({ types, title, defaultType }) {
             { title: tr('PAN / GST'), render: (_, r) => [r.pan, r.gstin].filter(Boolean).join(' / '), responsive: ['lg'] },
             { title: tr('Payments'), dataIndex: 'paymentCount', width: 95, align: 'center' },
             { title: tr('Last paid'), dataIndex: 'lastPaymentDate', render: fmtDate, width: 105, responsive: ['md'] },
-            { title: tr('Total received'), dataIndex: 'totalAmount', align: 'right', width: 140, render: (v) => <Money value={v} strong />, sorter: (a, b) => (a.totalAmount || 0) - (b.totalAmount || 0) },
+            { title: tr('Total received'), dataIndex: 'totalAmount', align: 'right', width: 140, render: (v) => <Money value={v} strong /> },
           ]}
         />
       </Card>

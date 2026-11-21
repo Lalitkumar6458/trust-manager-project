@@ -1,7 +1,7 @@
-// Pure accounting helpers (no Firestore) – used by dashboard, reports and closings.
+// Pure accounting helpers (no database) – used by dashboard, reports and closings.
 import dayjs from 'dayjs';
 import { round2, fyMonths, fyRange } from '@/lib/format';
-import { fyOpeningFor } from './ledger';
+import { fyOpeningFor } from '@/lib/ledgerMath';
 
 /** Classifies a ledger line. Reversals are classified by the type they reverse. */
 export function classOf(t) {

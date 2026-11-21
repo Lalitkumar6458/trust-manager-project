@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import {
@@ -8,21 +8,21 @@ import {
 } from 'antd';
 import { PlusOutlined, RollbackOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { where } from 'firebase/firestore';
+import { where } from '@/lib/q';
 import { COL, TXN_TYPES, MANUAL_TXN_TYPES } from '@/lib/constants';
 import { fmtDate, sum, todayStr } from '@/lib/format';
-import { useLiveQuery, useAction } from '@/lib/hooks';
+import { useAction } from '@/lib/hooks';
 import { useAuth } from '@/contexts/AuthContext';
 import { useAppData } from '@/contexts/AppDataContext';
 import { PageHeader, Money, Guard, useReasonPrompt } from '@/components/common';
 import ExportButtons from '@/components/ExportButtons';
 import { sourceLink } from '@/components/AccountBook';
-import { createManualEntry, reverseManualEntry, withRunningBalance, fyOpeningFor } from '@/services/ledger';
+import { createManualEntry, reverseManualEntry } from '@/services/ledger';
 import { ledgerExportCols } from '@/lib/exportCols';
-import { useServerList } from '@/lib/useServerList';
-import { ListStatus, LoadMoreBar } from '@/components/ServerListBits';
-import { useYearStats } from '@/lib/useYearStats';
-import { accountOpeningAtMonth } from '@/services/stats';
+import { useServerTable, useDebounced, useAsyncValue } from '@/lib/useServerTable';
+import { useBookBalance, bookOrder } from '@/lib/useBookBalance';
+import { normalizeSearch } from '@/lib/keywords';
+import ServerPager, { ServerError, ServerHint } from '@/components/ServerPager';
 import { useLang } from '@/i18n/LangContext';
 
 function ManualEntryModal({ open, onClose }) {
@@ -81,41 +81,23 @@ function LedgerInner() {
   const [open, setOpen] = useState(false);
   const [run] = useAction();
   const [ask, reasonModal] = useReasonPrompt();
-  const { stats } = useYearStats(app.selectedFy);
-  // filters (account / type / dates / search) run on the server over the whole year, 100 newest at a time.
-  // One account selected → everything in the range is loaded (from the 1st of the start month) so the
-  // running balance can start from the month opening kept in the year summary.
-  const list = useServerList(COL.transactions, app.selectedFy, {
-    server: [
-      { field: 'accountId', op: '==', value: f.accountId },
-      { field: 'type', op: '==', value: f.type },
-    ],
-    from: f.from && f.accountId ? `${f.from.slice(0, 7)}-01` : f.from,
-    to: f.to,
-    text: f.text,
-    forceAll: !!f.accountId,
-  });
-  const { loading } = list;
-  const data = list.rows;
-
-  const rows = useMemo(() => {
-    const t = (f.text || '').toLowerCase();
-    let out = data.filter((x) => (!f.accountId || x.accountId === f.accountId)
-      && (!f.type || x.type === f.type)
-      && (!f.from || x.date >= f.from) && (!f.to || x.date <= f.to)
-      && (list.searching || !t || [x.reference, x.partyName, x.description, x.utr, x.chequeNo].filter(Boolean).some((v) => String(v).toLowerCase().includes(t))));
-    if (f.accountId && !list.searching) {
-      const acc = app.accounts.find((a) => a.id === f.accountId);
-      const startOpening = f.from && stats
-        ? accountOpeningAtMonth({ fy: app.selectedFy, account: acc, stats, monthKey: f.from.slice(0, 7) })
-        : fyOpeningFor(app.selectedFy, acc);
-      const all = withRunningBalance(data.filter((x) => x.accountId === f.accountId), startOpening);
-      const bal = Object.fromEntries(all.map((x) => [x.id, x.balance]));
-      out = out.map((x) => ({ ...x, balance: bal[x.id] }));
-      return out.sort((a, b) => (a.date === b.date ? (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0) : a.date.localeCompare(b.date)));
-    }
-    return out.sort((a, b) => (b.date === a.date ? (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0) : b.date.localeCompare(a.date)));
-  }, [data, f, app.accounts, app.selectedFy, stats, list.searching]);
+  // every filter / search runs in PostgreSQL; only the 100 lines of the current page are downloaded
+  const term = normalizeSearch(useDebounced(f.text || ''));
+  const searching = term.length >= 2;
+  const cons = [where('financialYearId', '==', app.selectedFyId || '-')];
+  if (searching) cons.push(where('searchKeywords', 'array-contains', term));
+  if (f.accountId) cons.push(where('accountId', '==', f.accountId));
+  if (f.type && !searching) cons.push(where('type', '==', f.type));
+  if (f.from) cons.push(where('date', '>=', f.from));
+  if (f.to) cons.push(where('date', '<=', f.to));
+  const key = JSON.stringify([app.selectedFyId, searching ? term : '', f.accountId, searching ? '' : f.type, f.from, f.to]);
+  const table = useServerTable(COL.transactions, cons, { order: bookOrder('desc'), key, enabled: !!app.selectedFy });
+  const { loading } = table;
+  // one account (no type / search filter) → running balance; the balance before the page is a server-side sum
+  const account = app.accounts.find((a) => a.id === f.accountId);
+  const showBalance = !!account && !searching && !f.type;
+  const rows = useBookBalance(table, { fy: app.selectedFy, account, enabled: showBalance, dir: 'desc' });
+  const totals = useAsyncValue(() => table.sumOf(['credit', 'debit']), [key, table.rows], null);
   const typeLabel = (r) => ({ ...r, type: tr(TXN_TYPES[r.type] || r.type) });
   const exportTotals = (rs) => ({ description: tr('Total'), credit: sum(rs, (r) => r.credit), debit: sum(rs, (r) => r.debit) });
 
@@ -128,7 +110,7 @@ function LedgerInner() {
     <Guard perm="ledger.view">
       <PageHeader
         title={tr('Transactions / Ledger')}
-        subtitle={tr('Every money movement on every account · FY {fy} · {n} line(s)', { fy: app.selectedFyId, n: list.loadedAll ? rows.length : (list.total ?? '…') })}
+        subtitle={tr('Every money movement on every account · FY {fy} · {n} line(s)', { fy: app.selectedFyId, n: table.total ?? '…' })}
         extra={[
           <ExportButtons
             key="x"
@@ -136,9 +118,9 @@ function LedgerInner() {
             columns={ledgerExportCols}
             rows={rows.map(typeLabel)}
             totals={exportTotals(rows)}
-            getRows={f.accountId ? undefined : async () => (await list.fetchAllMatching()).filter((r) => (!f.from || r.date >= f.from)).map(typeLabel)}
+            getRows={async () => (await table.fetchAll()).map(typeLabel)}
             totalsFor={exportTotals}
-            count={list.total}
+            count={table.total}
           />,
           can('ledger.manual') ? <Button key="n" type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>{tr('New entry')}</Button> : null,
         ]}
@@ -147,7 +129,7 @@ function LedgerInner() {
         <Space wrap style={{ marginBottom: 12 }}>
           <Input.Search allowClear placeholder={tr('Reference, party, UTR…')} style={{ width: 220 }} value={f.text} onChange={(e) => setF({ ...f, text: e.target.value })} />
           <Select allowClear placeholder={tr('Account')} style={{ width: 220 }} value={f.accountId} onChange={(v) => setF({ ...f, accountId: v })} options={app.accounts.map((a) => ({ value: a.id, label: a.name }))} />
-          <Select allowClear placeholder={tr('Type')} style={{ width: 170 }} value={f.type} onChange={(v) => setF({ ...f, type: v })} options={Object.entries(TXN_TYPES).map(([value, label]) => ({ value, label: tr(label) }))} />
+          <Select allowClear disabled={searching} title={searching ? tr('Clear the search to filter by type') : undefined} placeholder={tr('Type')} style={{ width: 170 }} value={f.type} onChange={(v) => setF({ ...f, type: v })} options={Object.entries(TXN_TYPES).map(([value, label]) => ({ value, label: tr(label) }))} />
           <DatePicker.RangePicker
             format="DD-MM-YYYY"
             value={f.from && f.to ? [dayjs(f.from), dayjs(f.to)] : null}
@@ -159,16 +141,23 @@ function LedgerInner() {
             ]}
           />
         </Space>
-        <ListStatus list={list} />
-        {!f.accountId ? <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>{tr('Select one account to see the running balance.')}</Typography.Paragraph> : null}
+        <ServerHint mode={searching ? 'search' : 'filters'} />
+        <ServerError table={table} />
+        {totals ? (
+          <Space size="large" wrap style={{ marginBottom: 8, fontSize: 13 }}>
+            <span>{tr('Total in (credit)')}: <Money value={totals.credit || 0} type="in" strong /></span>
+            <span>{tr('Total out (debit)')}: <Money value={totals.debit || 0} type="out" strong /></span>
+          </Space>
+        ) : null}
+        {!showBalance ? <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>{tr('Select one account (without type filter or search) to see the running balance.')}</Typography.Paragraph> : null}
         <Table
           rowKey="id"
           size="small"
           loading={loading}
           dataSource={rows}
           scroll={{ x: 1100 }}
-          pagination={{ defaultPageSize: 50, showSizeChanger: true }}
-          footer={() => <LoadMoreBar list={list} />}
+          pagination={false}
+          footer={() => <ServerPager table={table} />}
           rowClassName={(r) => (r.id === highlight ? 'ant-table-row-selected' : r.status === 'reversed' ? 'muted' : '')}
           columns={[
             { title: tr('Date'), dataIndex: 'date', render: fmtDate, width: 100 },
@@ -179,7 +168,7 @@ function LedgerInner() {
             { title: tr('Description'), dataIndex: 'description', ellipsis: true },
             { title: tr('Credit (In)'), dataIndex: 'credit', align: 'right', width: 120, render: (v) => (v ? <Money value={v} type="in" /> : '') },
             { title: tr('Debit (Out)'), dataIndex: 'debit', align: 'right', width: 120, render: (v) => (v ? <Money value={v} type="out" /> : '') },
-            ...(f.accountId ? [{ title: tr('Balance'), dataIndex: 'balance', align: 'right', width: 130, render: (v) => <Money value={v} strong /> }] : []),
+            ...(showBalance ? [{ title: tr('Balance'), dataIndex: 'balance', align: 'right', width: 130, render: (v) => <Money value={v} strong /> }] : []),
             { title: tr('By'), dataIndex: 'createdByName', width: 110, ellipsis: true, responsive: ['xl'] },
             {
               title: '', width: 50,

@@ -48,11 +48,21 @@ export default function DonationForm({ donation }) {
   }, [donation, form]);
 
   // /donations/new?donor=<id> (from the donor page) → donor preselected
+  // ?pledge=<id>&amount=..&category=.. (from Sankalp → Receive) → prefilled instalment
+  const [pledgeId, setPledgeId] = useState(null);
   useEffect(() => {
     if (donation) return;
-    const d = new URLSearchParams(window.location.search).get('donor');
+    const q = new URLSearchParams(window.location.search);
+    const d = q.get('donor');
     if (d) form.setFieldValue('donorId', d);
-  }, [donation, form]);
+    if (q.get('pledge')) {
+      setPledgeId(q.get('pledge'));
+      const amount = Number(q.get('amount')) || undefined;
+      const categoryId = q.get('category') || undefined;
+      const c = app.donationCategories.find((x) => x.id === categoryId);
+      form.setFieldValue('lines', [{ categoryId, amount, fundId: c?.defaultFundId }]);
+    }
+  }, [donation, form]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // pick the only matching account automatically
   useEffect(() => {
@@ -76,6 +86,7 @@ export default function DonationForm({ donation }) {
       txnDate: v.txnDate ? v.txnDate.format('YYYY-MM-DD') : null,
       donorId: donorMode === 'existing' ? v.donorId : null,
       newDonor: donorMode === 'new' ? { ...v.newDonor, pan: (v.newDonor?.pan || '').toUpperCase() } : null,
+      ...(pledgeId && !editing ? { pledgeId } : {}),
     };
     const ctx = {
       user, categories: app.donationCategories, accounts: app.accounts, settings: app.settings,
@@ -105,6 +116,7 @@ export default function DonationForm({ donation }) {
     >
       <Row gutter={16}>
         <Col xs={24} lg={14}>
+          {pledgeId ? <Alert type="info" showIcon style={{ marginBottom: 12 }} title={tr('This receipt is a sankalp instalment – the next due date moves forward after saving.')} /> : null}
           <Card title={tr('Donor (दाता)')} size="small" style={{ marginBottom: 16 }}>
             {!editing ? (
               <Radio.Group value={donorMode} onChange={(e) => setDonorMode(e.target.value)} style={{ marginBottom: 12 }} optionType="button" buttonStyle="solid"

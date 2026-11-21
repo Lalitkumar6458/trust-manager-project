@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Button, Card, Table, Modal, Form, Input, Select, Tag, Dropdown, Alert, Typography, Tabs, Drawer, Checkbox, Space, Popconfirm, Empty, Tooltip,
 } from 'antd';
@@ -17,6 +17,7 @@ import { PageHeader, Guard } from '@/components/common';
 import { createStaffUser, updateStaffLogin } from '@/services/users';
 import { saveRole, deleteRole, assignRole, roleValueOf } from '@/services/roles';
 import { useLang } from '@/i18n/LangContext';
+import { rpc, rpcRead } from '@/lib/api';
 
 const BUILT_IN = Object.values(ROLES);
 
@@ -177,6 +178,8 @@ export default function UsersPage() {
     ...g.actions.map((a) => ({ key: a.perm, label: tr(a.label) })),
   ]);
 
+  const [tf, setTf] = useState({});
+  useEffect(() => { rpcRead('users.twoFactorList').then(setTf).catch(() => {}); }, [data.length]);
   const usersTab = (
     <Card>
       <Table
@@ -203,7 +206,7 @@ export default function UsersPage() {
               />
             )),
           },
-          { title: tr('Status'), dataIndex: 'active', render: (a) => (a === false ? <Tag color="red">{tr('Disabled')}</Tag> : <Tag color="green">{tr('Active')}</Tag>) },
+          { title: tr('Status'), dataIndex: 'active', render: (a, u) => <span>{a === false ? <Tag color="red">{tr('Disabled')}</Tag> : <Tag color="green">{tr('Active')}</Tag>}{tf[u.id] ? <Tag color="blue">2FA</Tag> : null}</span> },
           { title: tr('Created'), dataIndex: 'createdAt', render: fmtDateTime, responsive: ['xl'] },
           {
             title: '', width: 50,
@@ -211,6 +214,7 @@ export default function UsersPage() {
               <Dropdown menu={{
                 items: [
                   { key: 'p', label: tr('Reset password'), onClick: () => setPwFor(u) },
+                  ...(tf[u.id] ? [{ key: 't', label: tr('Reset 2-step login (lost phone)'), onClick: () => rowAction(u.id, async () => { await rpc('users.reset2fa', u.id); setTf({ ...tf, [u.id]: false }); }, 'Updated') }] : []),
                   { key: 'd', label: u.active === false ? tr('Enable login') : tr('Disable login'), danger: u.active !== false, onClick: () => rowAction(u.id, () => updateStaffLogin({ uid: u.id, disabled: u.active !== false }), 'Updated') },
                 ],
               }}
@@ -299,7 +303,7 @@ export default function UsersPage() {
             ...matrixCols.map((c) => ({ title: c.title, key: c.key, width: 110, align: 'center', render: (_, r) => (c.has(r.key) ? '✓' : '') })),
           ]}
         />
-        <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8 }}>{tr('The same rules are enforced on the server by Firestore & Storage security rules.')}</Typography.Paragraph>
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8 }}>{tr('The same rules are checked again on the server for every action.')}</Typography.Paragraph>
       </Card>
     </>
   );
@@ -322,7 +326,7 @@ export default function UsersPage() {
       />
 
       <Modal open={open} onCancel={() => setOpen(false)} onOk={create} confirmLoading={busy} title={tr('Add staff user')} destroyOnHidden>
-        <Alert type="info" showIcon style={{ marginBottom: 12 }} title={tr('Creates a Firebase login. Requires the server-side Firebase Admin credentials (see README).')} />
+        <Alert type="info" showIcon style={{ marginBottom: 12 }} title={tr('Creates a login with a temporary password – the user must choose his own password at first sign-in.')} />
         <Form form={form} layout="vertical" initialValues={{ role: 'operator' }}>
           <Form.Item name="name" label={tr('Name')} rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="email" label={tr('Email')} rules={[{ required: true, type: 'email' }]}><Input /></Form.Item>

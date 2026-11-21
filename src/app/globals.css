@@ -37,3 +37,8 @@ body { font-family: 'Hind', -apple-system, 'Segoe UI', Roboto, sans-serif; }
 @media (max-width: 640px) {
   .page-header h1 { font-size: 18px; }
 }
+
+/* owner control panel */
+.control-burger { display: none; }
+@media (max-width: 991px) { .control-burger { display: inline-flex; } }
+.control-stat .ant-statistic-content { font-size: 22px; }

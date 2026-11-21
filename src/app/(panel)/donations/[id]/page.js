@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Card, Descriptions, Table, Button, Space, Tabs, Result, Spin, Alert, Popconfirm, Dropdown } from 'antd';
 import {
-  PrinterOutlined, DownloadOutlined, EditOutlined, CheckOutlined, StopOutlined, SendOutlined, SafetyOutlined, WhatsAppOutlined, DownOutlined, ExceptionOutlined,
+  PrinterOutlined, DownloadOutlined, EditOutlined, CheckOutlined, StopOutlined, SendOutlined, SafetyOutlined, WhatsAppOutlined, DownOutlined, ExceptionOutlined, EyeOutlined, ShareAltOutlined, MailOutlined,
 } from '@ant-design/icons';
 import { COL } from '@/lib/constants';
 import { fmtDate, fmtDateTime, maskId } from '@/lib/format';
@@ -18,6 +18,8 @@ import AuditHistory from '@/components/AuditHistory';
 import { submitDonation, verifyDonation, approveDonation, voidDonation, markReceiptPrinted } from '@/services/donations';
 import { isPeriodLocked } from '@/services/periodLock';
 import { donationReceiptPdf } from '@/pdf/generate';
+import { receiptDesignOf } from '@/lib/receiptDesign';
+import { rpc } from '@/lib/api';
 import { useLang } from '@/i18n/LangContext';
 
 export default function DonationDetailPage() {
@@ -38,10 +40,20 @@ export default function DonationDetailPage() {
   const canEdit = !d.posted && !['approved', 'void'].includes(d.status) && !locked && can('donations.create') && (can('donations.verify') || isOwn);
   const fyFinalized = app.fys.find((f) => f.id === d.financialYearId)?.status === 'finalized';
   // every print is counted; the 2nd and later prints say "DUPLICATE"
-  const pdf = (download, copyLabel) => run(async () => {
+  const rLabels = receiptDesignOf(app.settings).labels;
+  const send = (channels) => run(async () => {
+    const r = await rpc('messages.sendReceipt', d.id, channels);
+    const bad = r.filter((x) => !x.ok);
+    if (bad.length) throw new Error(bad.map((x) => `${x.channel}: ${x.error}`).join(' · '));
+  }, 'Receipt sent');
+  const pdf = (mode, copyLabel, pageSize) => run(async () => {
     let n = 1;
     try { n = await markReceiptPrinted(d.id, user); } catch { /* print anyway */ }
-    await donationReceiptPdf({ donation: d, settings: app.settings, categories: app.donationCategories, download, copyLabel, duplicate: n > 1 && !copyLabel });
+    const settings = pageSize ? { ...app.settings, receiptDesign: { ...(app.settings.receiptDesign || {}), pageSize } } : app.settings;
+    await donationReceiptPdf({
+      donation: d, settings, categories: app.donationCategories, mode, copyLabel, duplicate: n > 1 && !copyLabel && !pageSize,
+      shareText: `${app.settings?.name || ''} – ${tr('Donation receipt')} ${d.receiptNo || ''} (₹${d.amount})`,
+    });
   });
 
   const doVoid = async () => {
@@ -69,13 +81,22 @@ export default function DonationDetailPage() {
   if (d.receiptNo) {
     actions.push(
       <Space.Compact key="p">
-        <Button icon={<PrinterOutlined />} loading={busy} onClick={() => pdf(false)}>{tr('Receipt')}</Button>
+        <Button icon={<PrinterOutlined />} loading={busy} onClick={() => pdf('print')}>{tr('Print')}</Button>
+        <Button icon={<DownloadOutlined />} loading={busy} onClick={() => pdf('download')}>{tr('Download')}</Button>
         <Dropdown
           menu={{
             items: [
-              { key: 'dl', icon: <DownloadOutlined />, label: tr('Download PDF'), onClick: () => pdf(true) },
-              { key: 'dc', label: tr('Donor copy'), onClick: () => pdf(false, 'दाता प्रति') },
-              { key: 'oc', label: tr('Office copy'), onClick: () => pdf(false, 'कार्यालय प्रति') },
+              { key: 'op', icon: <EyeOutlined />, label: tr('Open in new tab'), onClick: () => pdf('open') },
+              { key: 'sh', icon: <ShareAltOutlined />, label: tr('Share PDF (WhatsApp, email…)'), onClick: () => pdf('share') },
+              ...(can('messages.send') && d.status === 'approved' ? [
+                { key: 'em', icon: <MailOutlined />, label: tr('Email receipt to donor'), disabled: !app.settings.messaging?.emailEnabled, onClick: () => send(['email']) },
+                { key: 'wa', icon: <WhatsAppOutlined />, label: tr('Send receipt on WhatsApp (API)'), disabled: !app.settings.messaging?.whatsappEnabled, onClick: () => send(['whatsapp']) },
+              ] : []),
+              { type: 'divider' },
+              { key: 'dc', label: tr('Donor copy'), onClick: () => pdf('print', rLabels.donorCopy) },
+              { key: 'oc', label: tr('Office copy'), onClick: () => pdf('print', rLabels.officeCopy) },
+              { key: 'a4', label: tr('Both copies on one A4'), onClick: () => pdf('print', null, 'A4x2') },
+              { key: 'th', label: tr('Thermal printer (80 mm)'), onClick: () => pdf('print', null, 'T80') },
             ],
           }}
         >

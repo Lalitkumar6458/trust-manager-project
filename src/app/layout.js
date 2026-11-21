@@ -5,9 +5,11 @@ import './globals.css';
 export const metadata = {
   title: 'Trust Manager – Donation & Accounting',
   description: 'Trust donation, expense, accounting, audit & compliance management panel',
+  icons: { icon: '/favicon.png', apple: '/icons/apple-touch-icon.png' },
+  appleWebApp: { capable: true, title: 'Trust Manager', statusBarStyle: 'default' },
 };
 
-export const viewport = { width: 'device-width', initialScale: 1 };
+export const viewport = { width: 'device-width', initialScale: 1, themeColor: '#7d1a12' };
 
 export default function RootLayout({ children }) {
   return (

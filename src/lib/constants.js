@@ -26,6 +26,21 @@ export const COL = {
   notifications: 'notifications',
   roles: 'roles',
   stats: 'stats',
+  cashCounts: 'cashCounts',
+  messageLogs: 'messageLogs',
+  pledges: 'pledges',
+  budgets: 'budgets',
+  onlinePayments: 'onlinePayments',
+  bookingResources: 'bookingResources',
+  bookings: 'bookings',
+  sevaTypes: 'sevaTypes',
+  sevaBookings: 'sevaBookings',
+  inventoryItems: 'inventoryItems',
+  stockMoves: 'stockMoves',
+  assets: 'assets',
+  staff: 'staff',
+  payslips: 'payslips',
+  errorLogs: 'errorLogs',
 };
 
 // ---------------- Roles ----------------

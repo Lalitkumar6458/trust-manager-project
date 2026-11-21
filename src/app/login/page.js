@@ -7,12 +7,13 @@ import { Card, Form, Input, Button, Typography, Alert, App, Segmented } from 'an
 import { LockOutlined, MailOutlined } from '@ant-design/icons';
 import { useAuth } from '@/contexts/AuthContext';
 import { isBootstrapped } from '@/services/setup';
-import { isFirebaseConfigured } from '@/lib/firebase';
 import { useLang } from '@/i18n/LangContext';
 
 function LoginInner() {
   const { t: tr, lang, setLang } = useLang();
-  const { login, user, resetPassword, error } = useAuth();
+  const { login, verify2fa, user, error } = useAuth();
+  const [step2, setStep2] = useState(false);
+  const [code, setCode] = useState('');
   const router = useRouter();
   const params = useSearchParams();
   const { message } = App.useApp();
@@ -27,42 +28,35 @@ function LoginInner() {
   }, [user, router, params]);
 
   useEffect(() => {
-    if (!isFirebaseConfigured) return;
     isBootstrapped().then((b) => setNeedsSetup(!b)).catch(() => {});
   }, []);
 
   const onFinish = async ({ email, password }) => {
     setBusy(true);
     try {
-      await login(email.trim(), password);
+      const r = await login(email.trim(), password);
+      if (r?.needs2fa) setStep2(true);
     } catch (e) {
-      const known = {
-        'auth/invalid-credential': 'Invalid email or password',
-        'auth/wrong-password': 'Invalid email or password',
-        'auth/user-not-found': 'Invalid email or password',
-        'auth/invalid-email': 'Invalid email or password',
-        'auth/too-many-requests': 'Too many failed attempts. The account is temporarily locked – try again later or reset the password.',
-        'auth/user-disabled': 'Your account is disabled. Contact the Super Admin.',
-        'auth/network-request-failed': 'No internet connection. Check your network and try again.',
-      };
-      message.error(tr(known[e.code] || e.message), 6);
+      message.error(tr(e.message), 6);
     } finally {
       setBusy(false);
     }
   };
 
-  const onForgot = async () => {
-    const email = form.getFieldValue('email');
-    if (!email) {
-      message.info(tr('Enter your email first'));
-      return;
-    }
+  const onCode = async () => {
+    setBusy(true);
     try {
-      await resetPassword(email.trim());
-      message.success(tr('Password reset email sent'));
+      await verify2fa(code.trim());
     } catch (e) {
-      message.error(e.message);
+      message.error(tr(e.message), 6);
+      if (/expired/i.test(e.message)) { setStep2(false); setCode(''); }
+    } finally {
+      setBusy(false);
     }
+  };
+
+  const onForgot = () => {
+    message.info(tr('Ask the Super Admin to reset your password (Users & Roles → Reset password).'), 8);
   };
 
   return (
@@ -76,13 +70,18 @@ function LoginInner() {
           <Typography.Title level={3} className="brand-title" style={{ marginBottom: 0 }}>{tr('Trust Manager')}</Typography.Title>
           <Typography.Text type="secondary">{tr('Donation • Expense • Accounting • Audit')}</Typography.Text>
         </div>
-        {!isFirebaseConfigured ? (
-          <Alert type="warning" showIcon title={tr('Firebase is not configured')} description={tr('Copy .env.example to .env.local and fill in your Firebase keys.')} style={{ marginBottom: 16 }} />
-        ) : null}
         {error ? <Alert type="error" showIcon title={tr(error)} style={{ marginBottom: 16 }} /> : null}
         {needsSetup ? (
           <Alert type="info" showIcon style={{ marginBottom: 16 }} title={tr('First time here?')} description={<Link href="/setup">{tr('Run the one-time setup to create the Super Admin →')}</Link>} />
         ) : null}
+        {step2 ? (
+          <div>
+            <Alert type="info" showIcon style={{ marginBottom: 12 }} title={tr('2-step login')} description={tr('Enter the 6-digit code from your authenticator app (or a recovery code).')} />
+            <Input size="large" autoFocus value={code} onChange={(e) => setCode(e.target.value)} onPressEnter={onCode} placeholder="123456" inputMode="numeric" autoComplete="one-time-code" style={{ letterSpacing: 4, fontSize: 20, textAlign: 'center' }} />
+            <Button type="primary" block size="large" loading={busy} style={{ marginTop: 12 }} disabled={code.trim().length < 6} onClick={onCode}>{tr('Verify')}</Button>
+            <Button type="link" block onClick={() => { setStep2(false); setCode(''); }}>{tr('Back')}</Button>
+          </div>
+        ) : (
         <Form form={form} layout="vertical" onFinish={onFinish} requiredMark={false}>
           <Form.Item name="email" label={tr('Email')} rules={[{ required: true, type: 'email' }]}>
             <Input prefix={<MailOutlined />} autoComplete="username" size="large" />
@@ -93,6 +92,7 @@ function LoginInner() {
           <Button type="primary" htmlType="submit" block size="large" loading={busy}>{tr('Sign in')}</Button>
           <Button type="link" block onClick={onForgot} style={{ marginTop: 8 }}>{tr('Forgot password?')}</Button>
         </Form>
+        )}
       </Card>
     </div>
   );

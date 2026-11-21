@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Button, List, Modal, Form, Select, Input, Upload, Progress, Tag, Typography, Space, Empty } from 'antd';
 import { UploadOutlined, PaperClipOutlined, InboxOutlined } from '@ant-design/icons';
-import { where } from 'firebase/firestore';
+import { where } from '@/lib/q';
 import { COL, DOC_TYPES } from '@/lib/constants';
 import { fmtDateTime } from '@/lib/format';
 import { useLiveQuery, useAction } from '@/lib/hooks';
@@ -63,7 +63,7 @@ export default function DocumentsPanel({ linkedType, linkedId, linkedRef, financ
   const [ask, reasonModal] = useReasonPrompt();
   const [run] = useAction();
   const { data, loading } = useLiveQuery(linkedId ? COL.documents : null, [where('linkedId', '==', linkedId || '-')], [linkedId]);
-  const docs = data.filter((d) => d.status !== 'archived').sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+  const docs = data.filter((d) => d.status !== 'archived').sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 
   const archive = async (d) => {
     const reason = await ask(tr('Archive “{v0}”?', { v0: d.name }), { okText: tr('Archive') });

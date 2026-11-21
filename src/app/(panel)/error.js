@@ -10,6 +10,7 @@ export default function PanelError({ error, reset }) {
   useEffect(() => {
     // eslint-disable-next-line no-console
     console.error(error);
+    fetch('/api/log-error', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: error?.message, stack: error?.stack, path: window.location.pathname }) }).catch(() => {});
   }, [error]);
   return (
     <Result
